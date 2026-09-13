@@ -8,3 +8,6 @@ _diag*
 _diag-*
 Delete_*
 mytrashbin/
+.npmcache/
+.dsh-meow/
+.idea/

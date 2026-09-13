@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>meow-memory 记忆查看器 · 交互原型</title>
+<style>
+  :root{
+    --bg:#16161e; --panel:#1a1b26; --panel2:#1f2335; --card:#1e2130; --cardHover:#242838;
+    --border:#2f334d; --borderSoft:#262a3d; --text:#c0caf5; --text2:#9aa5ce; --text3:#6b7394;
+    --accent:#7aa2f7; --ok:#9ece6a; --warn:#e0af68; --danger:#f7768e; --purple:#bb9af7; --cyan:#7dcfff; --gray:#565f89;
+    --project:#7aa2f7; --fact:#9ece6a; --lesson:#f7768e; --topic:#e0af68; --rules:#bb9af7; --soul:#7dcfff; --user:#c0caf5;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--text);font:13px/1.5 "Noto Sans CJK SC","Source Han Sans SC",system-ui,sans-serif;display:flex;overflow:hidden}
+  .sb{width:220px;flex:0 0 220px;background:var(--panel);border-right:1px solid var(--borderSoft);display:flex;flex-direction:column;padding:0 0 12px}
+  .brand{display:flex;align-items:center;gap:10px;padding:16px}
+  .brand i{width:22px;height:22px;border-radius:6px;background:var(--accent);display:grid;place-items:center;color:#16161e;font-style:normal;font-weight:700}
+  .brand b{font-size:13.5px}
+  .newbtn{margin:0 16px 18px;height:32px;border:1px solid var(--border);background:var(--card);border-radius:9px;color:var(--text2);display:flex;align-items:center;gap:8px;padding:0 12px;cursor:pointer}
+  .newbtn:hover{background:var(--cardHover)}
+  .sblabel{font-size:11px;color:var(--text3);letter-spacing:.6px;padding:0 20px 6px}
+  .panelrow{display:flex;align-items:center;gap:10px;margin:0 12px 4px;height:30px;border-radius:8px;padding:0 12px;color:var(--text2);cursor:pointer}
+  .panelrow:hover{background:var(--cardHover)}
+  .panelrow.on{background:rgba(122,162,247,.14);color:var(--text);font-weight:600}
+  .panelrow.on .dot{background:var(--accent)}
+  .panelrow .dot{width:11px;height:11px;border-radius:50%;border:1.4px solid currentColor;background:none}
+  .wsrow{display:flex;align-items:center;gap:10px;margin:0 12px 2px;height:26px;border-radius:7px;padding:0 12px;color:var(--text2);cursor:pointer;font-size:12px}
+  .wsrow:hover{background:var(--cardHover)}
+  .wsrow.on{background:var(--cardHover);color:var(--text)}
+  .wsrow em{width:10px;height:10px;border-radius:3px;background:var(--project);opacity:.7}
+  .sbfoot{margin-top:auto;border-top:1px solid var(--borderSoft);padding:12px 20px 0;color:var(--text2);display:flex;gap:10px;align-items:center}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .hdr{display:flex;align-items:center;gap:14px;padding:14px 24px;border-bottom:1px solid var(--borderSoft);flex-wrap:wrap}
+  .hdr h1{margin:0;font-size:18px}
+  .hdr h1 small{font-size:12px;color:var(--text3);font-weight:400;margin-left:6px;letter-spacing:.5px}
+  .seg{display:flex;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:4px}
+  .seg button{border:0;background:none;color:var(--text2);font:inherit;padding:4px 13px;border-radius:7px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#16161e;font-weight:600}
+  .spacer{flex:1}
+  .search{width:240px;height:30px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;color:var(--text);padding:0 10px;font:inherit}
+  .search::placeholder{color:var(--text3)}
+  .tag{font-size:11px;color:var(--text3);font-family:ui-monospace,monospace}
+  .body{flex:1;min-height:0;overflow:auto;padding:16px 24px 24px}
+  .view{display:none;height:100%}
+  .view.on{display:block}
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+  .kpi span{font-size:12px;color:var(--text3)}
+  .kpi b{display:block;font-size:22px;margin:4px 0 2px}
+  .kpi i{font-style:normal;font-size:11px;color:var(--text3)}
+  .cols{display:flex;gap:20px;align-items:flex-start}
+  .col{min-width:0}
+  .sect{font-size:14px;font-weight:600;margin:0 0 10px}
+  .sect em{font-style:normal;font-size:11.5px;color:var(--text3);font-weight:400;margin-left:8px}
+  .wsgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .wscard{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:border-color .15s,background .15s}
+  .wscard:hover{border-color:var(--accent);background:var(--cardHover)}
+  .wscard .t{display:flex;align-items:center;justify-content:space-between}
+  .wscard .t b{font-size:13.5px}
+  .wscard .p{font-size:11px;color:var(--text3);font-family:ui-monospace,monospace;margin:6px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:var(--panel2)}
+  .bar i{height:100%}
+  .wscard .num{margin-top:10px;font-size:20px;font-weight:700}
+  .wscard .num small{font-size:11.5px;color:var(--text3);font-weight:400}
+  .wscard .meta{font-size:11.5px;color:var(--text2);margin-top:4px}
+  .legendmini{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:10.5px;color:var(--text3)}
+  .legendmini i{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px}
+  .listcard{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
+  .listcard .c{min-width:0;flex:1}
+  .listcard .c b{display:block;font-weight:400;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .listcard .c em{font-style:normal;font-size:10.5px;color:var(--text3)}
+  .badge{font:11px/18px ui-monospace,monospace;padding:0 6px;border-radius:5px;border-left:3px solid;white-space:nowrap}
+  .health{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .hrow{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:7px 12px;cursor:pointer}
+  .hrow:hover{border-color:var(--accent)}
+  .hrow i{width:8px;height:8px;border-radius:50%}
+  .hrow b{margin-left:auto;font-size:13px}
+  /* workspace view */
+  #v-workspace.on{height:calc(100vh - 128px)}
+  .wscols{display:flex;gap:16px;height:100%;min-height:420px}
+  .pane{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;overflow:auto}
+  .pane.left{width:220px;flex:0 0 220px}
+  .pane.mid{flex:1;min-width:0;background:none;border:0;padding:0;overflow:visible}
+  .pane.right{width:320px;flex:0 0 320px;background:var(--panel)}
+  .prow{display:flex;align-items:center;gap:8px;height:26px;border-radius:7px;padding:0 8px;cursor:pointer;font-size:12.5px;color:var(--text2)}
+  .prow:hover{background:var(--cardHover)}
+  .prow.on{background:rgba(122,162,247,.14);color:var(--text);font-weight:600}
+  .prow b{margin-left:auto;font:11.5px ui-monospace,monospace;color:var(--text3)}
+  .filters{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+  .chip{border:1px solid var(--border);background:var(--panel2);border-radius:8px;padding:5px 10px;font-size:11.5px;color:var(--text2);cursor:pointer}
+  .chip.on{border-color:var(--accent);color:var(--text);background:rgba(122,162,247,.12)}
+  .mem{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;cursor:pointer}
+  .mem:hover{border-color:var(--accent)}
+  .mem.sel{border-color:var(--accent);background:var(--cardHover)}
+  .mem .top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .mem .top em{font-style:normal;font-size:11px;color:var(--text3)}
+  .mem .top .r{margin-left:auto;font-size:11px;color:var(--text3)}
+  .mem p{margin:0;font-size:12.5px;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .mem .kw{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .kw span{font-size:11px;background:rgba(122,162,247,.12);color:var(--text2);border-radius:9px;padding:2px 8px}
+  .drow{display:flex;gap:10px;font-size:11.5px;padding:3px 0;border-bottom:1px dashed var(--borderSoft)}
+  .drow span:first-child{width:104px;flex:0 0 104px;color:var(--text3);font-family:ui-monospace,monospace}
+  .drow span:last-child{color:var(--text2);word-break:break-all}
+  .btn{border:1px solid var(--border);background:var(--card);color:var(--text2);border-radius:8px;padding:6px 12px;font:inherit;font-size:12px;cursor:pointer}
+  .btn:hover{background:var(--cardHover)}
+  .btn.primary{background:var(--accent);color:#16161e;border-color:transparent;font-weight:600}
+  /* starmap */
+  .graphwrap{position:relative;height:calc(100vh - 210px);min-height:420px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#12131b}
+  #cv{display:block;width:100%;height:100%;cursor:grab}
+  #cv.drag{cursor:grabbing}
+  .glegend{position:absolute;left:14px;bottom:14px;background:rgba(26,27,38,.92);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:11.5px;color:var(--text2)}
+  .glegend div{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+  .glegend i{width:9px;height:9px;border-radius:50%}
+  .ginfo{position:absolute;right:14px;top:14px;width:300px;background:rgba(26,27,38,.96);border:1px solid var(--border);border-radius:12px;padding:14px;display:none}
+  .ginfo.on{display:block}
+  .ginfo h3{margin:0 0 8px;font-size:13px;display:flex;gap:8px;align-items:center}
+  .ginfo p{margin:0 0 8px;font-size:12.5px;color:var(--text)}
+  .gstats{position:absolute;left:14px;top:14px;background:rgba(26,27,38,.92);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font:11.5px ui-monospace,monospace;color:var(--text3);display:flex;gap:16px}
+  .ghint{position:absolute;right:14px;bottom:14px;font-size:11px;color:var(--text3);background:rgba(26,27,38,.9);border:1px solid var(--border);border-radius:9px;padding:6px 10px}
+</style>
+</head>
+<body>
+<aside class="sb">
+  <div class="brand"><i>DS</i><b>DeepSeek Harness</b></div>
+  <div class="newbtn">＋ 新会话</div>
+  <div class="sblabel">全局面板</div>
+  <div class="panelrow on"><span class="dot"></span>记忆</div>
+  <div class="panelrow"><span class="dot"></span>文件</div>
+  <div class="sblabel" style="margin-top:14px">工作区</div>
+  <div id="wsnav"></div>
+  <div class="sbfoot">⚙ 设置</div>
+</aside>
+
+<div class="main">
+  <div class="hdr">
+    <h1>记忆<small>Memory</small></h1>
+    <div class="seg" id="seg">
+      <button data-v="global" class="on">全局</button>
+      <button data-v="workspace">工作区</button>
+      <button data-v="starmap">星图</button>
+    </div>
+    <div id="hdrExtra"></div>
+    <div class="spacer"></div>
+    <span class="tag" id="fresh">60s 前更新</span>
+    <input class="search" id="q" placeholder="搜索记忆…">
+  </div>
+
+  <div class="body">
+    <!-- 全局 -->
+    <section class="view on" id="v-global">
+      <div class="kpis" id="kpis"></div>
+      <div class="cols">
+        <div class="col" style="flex:1 1 62%">
+          <div class="sect">工作区<em id="wsNote"></em></div>
+          <div class="wsgrid" id="wsgrid"></div>
+          <div class="sect" style="margin-top:18px">健康检查<em>点击跳转到对应过滤结果</em></div>
+          <div class="health" id="health"></div>
+        </div>
+        <div class="col" style="flex:1 1 38%">
+          <div class="sect">跨库最近更新</div>
+          <div id="recent"></div>
+          <div class="sect" style="margin-top:16px">全局条目<em>project = 全局，跨库收集</em></div>
+          <div id="globals"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 工作区 -->
+    <section class="view" id="v-workspace">
+      <div class="wscols">
+        <div class="pane left">
+          <div class="sect" style="font-size:13px">项目</div>
+          <div id="ptree"></div>
+          <div class="sect" style="font-size:13px;margin-top:16px">层级（点击过滤）</div>
+          <div id="ltree"></div>
+        </div>
+        <div class="pane mid">
+          <div class="filters">
+            <input class="search" id="wq" style="width:260px" placeholder="搜索（BM25，与 memory_search 同算法）">
+            <button class="chip on" data-f="level">level: 全部</button>
+            <button class="chip on" data-f="status">status: active</button>
+            <button class="chip" data-f="days">时间: 全部</button>
+            <span class="tag" id="wcount"></span>
+          </div>
+          <div id="memlist"></div>
+        </div>
+        <div class="pane right">
+          <div class="sect" style="font-size:13px">详情</div>
+          <div id="detail"><span class="tag">← 选一条记忆看详情</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 星图 -->
+    <section class="view" id="v-starmap" style="height:100%">
+      <div class="filters" id="gfilters">
+        <span class="tag">边：</span>
+        <button class="chip on" data-e="project">结构边</button>
+        <button class="chip on" data-e="similar">相似边</button>
+        <button class="chip on" data-e="session">会话边</button>
+        <span class="tag" style="margin-left:10px">布局：</span>
+        <button class="chip on" data-l="constellation">星座布局</button>
+        <button class="chip" data-l="force">力导向</button>
+        <span class="tag" style="margin-left:10px">层级：</span>
+        <span id="glevels" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+      </div>
+      <div class="graphwrap" id="gwrap">
+        <canvas id="cv"></canvas>
+        <div class="gstats" id="gstats"></div>
+        <div class="glegend" id="glegend"></div>
+        <div class="ginfo" id="ginfo"></div>
+        <div class="ghint">hover 高亮邻接 · 单击详情 · 双击复位 · 拖拽平移 · 滚轮缩放</div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   假数据（确定性生成，纯前端原型；真实实现由 /meow-memory/api/* 提供）
+   ═══════════════════════════════════════════════════════════════════════════ */
+function mulberry32(a){return function(){a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296}}
+const rnd=mulberry32(20260913)
+const LEVELS=['project','fact','lesson','topic','rules','soul','user']
+const LCOLOR={project:'#7aa2f7',fact:'#9ece6a',lesson:'#f7768e',topic:'#e0af68',rules:'#bb9af7',soul:'#7dcfff',user:'#c0caf5',none:'#565f89'}
+
+const WS=[
+  {id:'dsh-meow-memory',path:'/home/azalea/WorkSpace/azalea-git/dsh-meow-memory',total:214,projects:4,rel:'2 分钟前',counts:{project:42,fact:96,lesson:28,topic:18,rules:22,soul:3,user:5},dream:'dreamed'},
+  {id:'femwa',path:'/home/azalea/WorkSpace/azalea-git/femwa',total:96,projects:2,rel:'1 小时前',counts:{project:22,fact:38,lesson:14,topic:8,rules:10,soul:1,user:3},dream:'dreamed'},
+  {id:'dsh',path:'/home/azalea/WorkSpace/dsh',total:318,projects:3,rel:'3 小时前',counts:{project:88,fact:141,lesson:32,topic:21,rules:28,soul:2,user:6},dream:'dreaming'},
+  {id:'meow-eyes',path:'/home/azalea/WorkSpace/azalea-git/meow-eyes',total:58,projects:1,rel:'昨天',counts:{project:14,fact:24,lesson:6,topic:4,rules:8,soul:0,user:2},dream:'dreamed'},
+]
+const SAMPLES={
+  project:[
+    ['meow-memory','structure','meow-memory 代码结构（src/，约 1 万行）：index.ts（host 装配）、db.ts（SQLite 数据层）、tools.ts、inject.ts、dream.ts、bm25.ts、prompt-loader.ts。',['模块划分','index.ts 装配','db.ts 数据层','client 折叠 UI','esbuild 打包'],3,'active'],
+    ['dsh','overview','dsh 是 DeepSeek Harness：cordis 插件体系 + slot 扩展点 + session 事件流，客户端为 React shell（web）。',['cordis','slot 扩展点','session 事件','web shell'],3,'active'],
+    ['femwa','decisions','femGen 的 seed 必须固定，否则渲染不可复现；模型换版本要重跑基线。',['femGen','seed','可复现','基线'],2,'active'],
+    ['meow-eyes','ops','猫眼服务端口 3081，描述路由 /meow-eyes/describe 返回全量快照。',['端口 3081','describe','快照'],2,'active'],
+  ],
+  fact:[
+    ['dsh-meow-memory',null,'命中打分 = 交集 × idf × 覆盖率 × 艾宾浩斯衰减(updated_at) × importance × title 加成。',['命中打分','idf','艾宾浩斯','importance'],2,'active'],
+    ['dsh',null,'dsh 的 slot 契约目录在 @deepseek-ai/dsh-cordis-client-runner 的 client bundle 里，共 69 条。',['slot 契约','cordis-client-runner','69 条'],3,'active'],
+    ['meow-eyes',null,'描述路由是全量快照 + 事件驱动，无轮询。',['全量快照','事件驱动','无轮询'],1,'active'],
+    ['femwa',null,'femwa 的页面级 SSE 是压垮浏览器连接池的最后一根稻草。',['SSE','连接池','6 条上限'],2,'active'],
+    ['dsh-meow-memory',null,'node:sqlite readOnly 打开不存在的库会直接抛错——天然不会误建库。',['node:sqlite','readOnly','不建库'],3,'active'],
+  ],
+  lesson:[
+    ['dsh-meow-memory',null,'跨工作区读取别家的 memory.db 必须用 readOnly：getDb() 会建表 + 跑 upgrade()，等于写坏别人的库。',['readOnly','跨工作区','getDb','误写'],3,'active'],
+    ['dsh',null,'不能只看 parentSession 判子代理：GUI fork 的主会话也有 parentSession（真机踩坑）。',['parentSession','子代理','origin','误判'],3,'active'],
+    ['femwa',null,'把失败窗口按 aborted 封存，会让一次断网整夜吞掉所有窗口的 dream。',['dream','aborted','断网','封存'],3,'active'],
+    ['dsh-meow-memory',null,'插件定时器里的未捕获异常会终止整个 dsh 进程——插件绝不能把宿主带崩。',['定时器','未捕获异常','宿主崩溃'],3,'active'],
+  ],
+  topic:[
+    ['dsh-meow-memory',null,'让 meow-memory 具备可视化记忆查看能力（全局 / 工作区 / 星图三层视图）。',['记忆查看器','可视化','星图','全局视图'],2,'active'],
+    ['dsh',null,'dsh 0.1.5 兼容性收尾：followup 独立成轮 + dock hooks 契约跟随。',['0.1.5','followup','dock hooks'],2,'active'],
+    ['femwa',null,'femwa 页面卡顿排查：连接池饥饿 vs 渲染阻塞。',['卡顿','连接池','渲染'],1,'active'],
+  ],
+  rules:[
+    ['dsh-meow-memory',null,'客户端 UI 文案沿用硬编码中文——官方 locale 字典没有第三方席位。',['locale','硬编码','settings-page'],3,'active'],
+    ['dsh-meow-memory',null,'KV 缓存友好：静态手册进 system prompt 且文本恒定。',['KV 缓存','system prompt','静态手册'],3,'active'],
+    ['全局',null,'非常重要、致命、犯错会很糟糕的决策/红线 → importance 4。',['importance','红线','致命'],4,'active'],
+    ['dsh',null,'本机文件一律不删除（红线）。',['不删除','本机文件','红线'],4,'active'],
+  ],
+  soul:[
+    ['全局',null,'我是运行在 dsh 上的编码代理，工作区记忆由 meow-memory 维护。',['dsh','编码代理','记忆'],2,'active'],
+  ],
+  user:[
+    ['全局',null,'用户机器时钟为美区时间，dream 峰时抑制必须按 Asia/Shanghai 计算。',['美区时间','Asia/Shanghai','峰时抑制'],3,'active'],
+    ['全局',null,'用户偏好：先给结论，再给依据；中文回答。',['偏好','结论先行','中文'],3,'active'],
+  ],
+}
+const MEM=[]
+let uid=0
+for(const ws of WS){
+  const per=ws.id==='dsh-meow-memory'?26:ws.id==='dsh'?20:ws.id==='femwa'?14:10
+  for(let i=0;i<per;i++){
+    const level=LEVELS[Math.floor(rnd()*LEVELS.length)]
+    const pool=SAMPLES[level]
+    const s=pool[i%pool.length]
+    const [proj,sub,content,kws,imp,status]=s
+    if(level==='soul'&&rnd()<0.7) continue
+    MEM.push({id:'m'+(++uid).toString(36).padStart(3,'0')+'-'+Math.floor(rnd()*1e6).toString(36),
+      ws:ws.id,level,sub:level==='project'?sub:null,project:proj,
+      content:content,keywords:kws,importance:imp,
+      status:rnd()<0.08?'stale':status,
+      updatedAt:Date.now()-Math.floor(rnd()*20)*3600e3-Math.floor(rnd()*9)*86400e3,
+      session:'session-'+['cd11292b','a1f3c9d2','e95f149b','7b2e4410'][Math.floor(rnd()*4)],
+      hits:Math.floor(rnd()*9)})
+  }
+}
+const SESSIONS=[
+  {id:'session-cd11292b',rel:'2 分钟前',reads:12,writes:3},
+  {id:'session-a1f3c9d2',rel:'1 小时前',reads:8,writes:1},
+  {id:'session-e95f149b',rel:'昨天',reads:21,writes:0},
+  {id:'session-7b2e4410',rel:'昨天',reads:5,writes:2},
+]
+const GLOBALS=MEM.filter(m=>['rules','user'].includes(m.level)&&(m.project==='全局')).slice(0,4)
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   通用小工具
+   ═══════════════════════════════════════════════════════════════════════════ */
+const $=s=>document.querySelector(s)
+const el=(tag,cls,html)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(html!=null)e.innerHTML=html;return e}
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+const relTime=t=>{const d=Date.now()-t;if(d<60e3)return'刚刚';if(d<3600e3)return Math.floor(d/60e3)+' 分钟前';if(d<86400e3)return Math.floor(d/3600e3)+' 小时前';return Math.floor(d/86400e3)+' 天前'}
+const absTime=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')
+const badge=(level,sub)=>{const c=LCOLOR[level]||LCOLOR.none;return '<span class="badge" style="color:'+c+';border-color:'+c+';background:'+c+'22">'+level+(sub?' · '+sub:'')+'</span>'}
+const stars=n=>'<span style="color:#e0af68;font-size:11px">'+'★'.repeat(Math.max(0,Math.min(4,n)))+'</span>'
+let CURRENT_WS='dsh-meow-memory'
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   视图 1：全局
+   ═══════════════════════════════════════════════════════════════════════════ */
+function renderSidebarNav(){
+  const box=$('#wsnav');box.innerHTML=''
+  if(!WS.some(w=>w.id===CURRENT_WS)) CURRENT_WS=WS[0].id
+  for(const w of WS){
+    const d=el('div','wsrow'+(w.id===CURRENT_WS?' on':''),'<em></em>'+esc(w.id))
+    d.onclick=()=>{CURRENT_WS=w.id;renderSidebarNav();renderWorkspace();renderGlobal()}
+    box.appendChild(d)
+  }
+}
+function renderGlobal(){
+  const total=WS.reduce((a,w)=>a+w.total,0)
+  const kpis=[['工作区',WS.length,WS.length-1+' 个有记忆库','var(--accent)'],['记忆总数',total.toLocaleString(),'active '+(total-42),'var(--ok)'],['本周新增','63','↑ 12%','var(--cyan)'],['项目','17','4 个跨工作区','var(--purple)'],['待整理窗口','3','空闲 ≥3h','var(--warn)'],['已归档','42','stale 91','var(--text3)']]
+  $('#kpis').innerHTML=kpis.map(([l,v,s,c])=>'<div class="kpi"><span>'+l+'</span><b style="color:'+c+'">'+v+'</b><i>'+s+'</i></div>').join('')
+  $('#wsNote').textContent=WS.length+' 个（1 个无记忆库）'
+  $('#wsgrid').innerHTML=WS.map(w=>{
+    const bar=LEVELS.map(l=>'<i style="width:'+((w.counts[l]||0)/w.total*100)+'%;background:'+LCOLOR[l]+'"></i>').join('')
+    const mini=LEVELS.filter(l=>w.counts[l]).map(l=>'<span><i style="background:'+LCOLOR[l]+'"></i>'+l+' '+w.counts[l]+'</span>').join('')
+    return '<div class="wscard" data-ws="'+w.id+'"><div class="t"><b>'+esc(w.id)+'</b><span style="color:var(--warn);opacity:'+(w.dream==='dreaming'?1:.55)+'">●</span></div>'+
+      '<div class="p">'+esc(w.path)+'</div><div class="bar">'+bar+'</div>'+
+      '<div class="num">'+w.total+'<small> 条</small></div><div class="meta">项目 '+w.projects+' · 最近更新 '+w.rel+'</div>'+
+      '<div class="legendmini">'+mini+'</div></div>'
+  }).join('')
+  document.querySelectorAll('.wscard').forEach(c=>c.onclick=()=>{CURRENT_WS=c.dataset.ws;switchView('workspace');renderSidebarNav()})
+  const health=[['无关键词条目',3,'var(--warn)'],['超期未更新 rules',4,'var(--text3)'],['疑似重复（相似 ≥0.8）',5,'var(--danger)'],['未完成 todo',2,'var(--cyan)']]
+  $('#health').innerHTML=health.map(([l,n,c])=>'<div class="hrow" data-h="'+l+'"><i style="background:'+c+'"></i>'+l+'<b style="color:'+c+'">'+n+'</b><span class="tag">→</span></div>').join('')
+  document.querySelectorAll('.hrow').forEach(r=>r.onclick=()=>{switchView('workspace');$('#wq').value='';renderMemList()})
+  const recent=MEM.slice().sort((a,b)=>b.updatedAt-a.updatedAt).slice(0,6)
+  $('#recent').innerHTML=recent.map(m=>'<div class="listcard">'+badge(m.level,m.sub)+'<div class="c"><b>'+esc(m.content)+'</b><em>'+esc(m.ws)+' · '+relTime(m.updatedAt)+'</em></div></div>').join('')
+  const globals=GLOBALS.length?GLOBALS:[MEM.find(m=>m.level==='rules')]
+  $('#globals').innerHTML=globals.map(m=>'<div class="listcard">'+badge(m.level)+'<div class="c"><b>'+esc(m.content)+'</b><em>来源：'+esc(m.ws)+'</em></div></div>').join('')
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   视图 2：工作区
+   ═══════════════════════════════════════════════════════════════════════════ */
+let selProject='ALL', selLevel=null, selMem=null
+function memsOf(){return MEM.filter(m=>m.ws===CURRENT_WS)}
+function renderProjectTree(){
+  const rows=memsOf()
+  const counts={}
+  for(const m of rows){const p=m.project||'未标记';counts[p]=(counts[p]||0)+1}
+  const items=[['ALL','全部',rows.length],...Object.entries(counts).sort((a,b)=>b[1]-a[1])]
+  $('#ptree').innerHTML=items.map(([k,l,n])=>'<div class="prow'+(selProject===k?' on':'')+'" data-p="'+esc(k)+'"><span style="width:8px;height:8px;border-radius:50%;background:'+(k==='全局'?'var(--gray)':'var(--project)')+';opacity:.8"></span>'+esc(l)+'<b>'+n+'</b></div>').join('')
+  document.querySelectorAll('#ptree .prow').forEach(r=>r.onclick=()=>{selProject=r.dataset.p;renderProjectTree();renderMemList()})
+  const lc={}
+  for(const m of rows) lc[m.level]=(lc[m.level]||0)+1
+  $('#ltree').innerHTML=LEVELS.map(l=>'<div class="prow'+(selLevel===l?' on':'')+'" data-l="'+l+'"><span style="width:9px;height:9px;border-radius:50%;background:'+LCOLOR[l]+'"></span>'+l+'<b>'+(lc[l]||0)+'</b></div>').join('')
+  document.querySelectorAll('#ltree .prow').forEach(r=>r.onclick=()=>{selLevel=selLevel===r.dataset.l?null:r.dataset.l;renderProjectTree();renderMemList()})
+}
+function renderMemList(){
+  const q=($('#wq').value||'').trim().toLowerCase()
+  let rows=memsOf()
+  if(selProject!=='ALL') rows=rows.filter(m=>(m.project||'未标记')===selProject)
+  if(selLevel) rows=rows.filter(m=>m.level===selLevel)
+  if(q) rows=rows.filter(m=>(m.content+m.keywords.join(' ')).toLowerCase().includes(q))
+  rows.sort((a,b)=>b.updatedAt-a.updatedAt)
+  $('#wcount').textContent=rows.length+' 条'
+  $('#memlist').innerHTML=rows.map(m=>'<div class="mem'+(selMem&&selMem.id===m.id?' sel':'')+'" data-id="'+m.id+'">'+
+    '<div class="top">'+badge(m.level,m.sub)+'<em>'+(m.project?esc(m.project):'未标记')+'</em>'+
+    '<span style="margin-left:auto">'+stars(m.importance)+'</span><span class="r">'+relTime(m.updatedAt)+'</span></div>'+
+    '<p>'+esc(m.content)+'</p><div class="kw">'+m.keywords.map(k=>'<span>'+esc(k)+'</span>').join('')+'</div></div>').join('')
+    ||'<span class="tag">没有匹配的记忆</span>'
+  document.querySelectorAll('.mem').forEach(c=>{
+    c.onclick=()=>{selMem=MEM.find(m=>m.id===c.dataset.id);renderMemList();renderDetail()}
+    c.onmouseenter=()=>{if(GRAPH.on)highlightByMem(c.dataset.id)}
+  })
+}
+function renderDetail(){
+  const m=selMem
+  if(!m){$('#detail').innerHTML='<span class="tag">← 选一条记忆看详情</span>';return}
+  const rel=MEM.filter(x=>x.id!==m.id&&x.level===m.level).sort(()=>rnd()-.5).slice(0,3)
+  $('#detail').innerHTML=
+    '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">'+badge(m.level,m.sub)+'<span class="tag">'+(m.project||'未标记')+'</span><span class="tag" style="margin-left:auto">'+m.status+'</span></div>'+
+    '<p style="margin:0 0 12px;font-size:12.5px;line-height:1.7">'+esc(m.content)+'</p>'+
+    '<div>'+[['id',m.id],['level',m.level],['subcategory',m.sub||'—'],['project',m.project||'—'],['importance',stars(m.importance)+' ('+m.importance+')'],['status',m.status],['created_at',absTime(m.updatedAt-3600e3)],['updated_at',absTime(m.updatedAt)+'（'+relTime(m.updatedAt)+'）'],['source_session',m.session],['hit_count',m.hits],['keywords',m.keywords.join(', ')]].map(([k,v])=>'<div class="drow"><span>'+k+'</span><span>'+esc(v)+'</span></div>').join('')+'</div>'+
+    '<div style="display:flex;gap:8px;margin:12px 0"><button class="btn primary">在会话中查看</button><button class="btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(\''+m.id+'\')">复制 id</button></div>'+
+    '<div class="sect" style="font-size:12.5px">相关记忆（findSimilar）</div>'+
+    rel.map(r=>'<div class="listcard" style="margin-bottom:6px">'+badge(r.level)+'<div class="c"><b>'+esc(r.content)+'</b><em>0.'+(30+Math.floor(rnd()*40))+'</em></div></div>').join('')
+}
+function renderWorkspace(){renderProjectTree();renderMemList();renderDetail()}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   视图 3：星图（星座布局 / 力导向，Canvas）
+   ═══════════════════════════════════════════════════════════════════════════ */
+const GRAPH={on:false,nodes:[],edges:[],byId:new Map(),adj:new Map(),layout:'constellation',
+  edgesOn:{project:true,similar:true,session:true},levels:new Set(LEVELS),
+  tx:0,ty:0,k:1,hover:null,sel:null,alpha:0,vel:new Map()}
+function buildGraph(){
+  const rows=MEM
+  const projects=[...new Set(rows.map(m=>m.project).filter(p=>p&&p!=='全局'))]
+  const cx=520,cy=340
+  const clusters=projects.map((p,i)=>{
+    const a=i/projects.length*Math.PI*2-1.1
+    const dist=projects.length>1?Math.min(300,170+projects.length*14):0
+    const n=rows.filter(m=>m.project===p).length
+    return {name:p,x:cx+Math.cos(a)*dist*1.15,y:cy+Math.sin(a)*dist*0.72,r:52+Math.min(90,n*3.4)}
+  })
+  GRAPH.nodes=[];GRAPH.edges=[]
+  const push=n=>{GRAPH.nodes.push(n);return n}
+  const hub={}
+  for(const c of clusters) hub[c.name]=push({id:'p:'+c.name,type:'project',label:c.name,x:c.x,y:c.y,r:9,level:'project'})
+  // 全局/未标记星云
+  const neb={x:cx-360,y:cy+190}
+  const others=rows.filter(m=>!m.project||m.project==='全局')
+  others.forEach((m,i)=>{const a=i*2.399,r=22+i*6.5;push({id:m.id,type:'memory',mem:m,x:neb.x+Math.cos(a)*r,y:neb.y+Math.sin(a)*r*0.7,r:2.6,level:m.level,cluster:null})})
+  // 星系内分层
+  for(const c of clusters){
+    const inC=rows.filter(m=>m.project===c.name)
+    const byLevel={}
+    for(const m of inC){(byLevel[m.level]=byLevel[m.level]||[]).push(m)}
+    const frac={project:.34,fact:.6,lesson:.62,topic:.86,rules:.88,soul:1,user:1}
+    let li=0
+    for(const lv of LEVELS){
+      const list=byLevel[lv]||[]
+      list.forEach((m,i)=>{
+        const a=(i/Math.max(1,list.length))*Math.PI*2+li*0.7
+        const rr=c.r*(frac[lv]||.7)
+        const node=push({id:m.id,type:'memory',mem:m,x:c.x+Math.cos(a)*rr,y:c.y+Math.sin(a)*rr*0.85,r:3+Math.min(3,m.importance),level:lv,cluster:c.name})
+        GRAPH.edges.push({a:node,b:hub[c.name],type:'project',w:1})
+      })
+      li++
+    }
+  }
+  // 相似边：同项目内共享关键词 top-2
+  for(const c of clusters){
+    const list=GRAPH.nodes.filter(n=>n.cluster===c.name)
+    for(const a of list){
+      const cands=list.filter(b=>b!==a).map(b=>({b,s:jaccard(a.mem.keywords,b.mem.keywords)})).filter(x=>x.s>0.15).sort((x,y)=>y.s-x.s).slice(0,2)
+      for(const c2 of cands) if(c2.b.id>a.id) GRAPH.edges.push({a,b:c2.b,type:'similar',w:c2.s})
+    }
+  }
+  // 会话节点 + 读写边
+  SESSIONS.forEach((s,i)=>{
+    const a=i/SESSIONS.length*Math.PI*2
+    const node=push({id:'s:'+s.id,type:'session',label:s.id.replace('session-',''),x:cx+Math.cos(a)*540,y:cy+Math.sin(a)*300,r:7,level:'session'})
+    const targets=rows.filter(m=>m.session===s.id).slice(0,Math.max(1,s.reads%5+1)).map(m=>GRAPH.byId.get(m.id)||GRAPH.nodes.find(n=>n.id===m.id)).filter(Boolean)
+    for(const t of targets) GRAPH.edges.push({a:node,b:t,type:'session',w:1})
+  })
+  GRAPH.byId=new Map(GRAPH.nodes.map(n=>[n.id,n]))
+  GRAPH.adj=new Map(GRAPH.nodes.map(n=>[n.id,[]]))
+  for(const e of GRAPH.edges){
+    const av=GRAPH.byId.get(e.a.id)||e.a, bv=GRAPH.byId.get(e.b.id)||e.b
+    e.a=av;e.b=bv
+    GRAPH.adj.get(av.id).push({n:bv,e});GRAPH.adj.get(bv.id).push({n:av,e})
+  }
+  for(const n of GRAPH.nodes){n.deg=GRAPH.adj.get(n.id).length}
+}
+function jaccard(a,b){const A=new Set(a),B=new Set(b);let i=0;for(const x of A)if(B.has(x))i++;return i/(A.size+B.size-i||1)}
+
+/* 星座坐标即初始坐标；力导向在初始坐标上跑模拟 */
+function stepForce(alpha){
+  const ns=GRAPH.nodes
+  for(let i=0;i<ns.length;i++){
+    const a=ns[i]
+    for(let j=i+1;j<ns.length;j++){
+      const b=ns[j]
+      let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||0.01
+      if(d2>90000) continue
+      const f=1400/d2
+      const d=Math.sqrt(d2)
+      dx/=d;dy/=d
+      a.x+=dx*f*alpha;a.y+=dy*f*alpha;b.x-=dx*f*alpha;b.y-=dy*f*alpha
+    }
+  }
+  for(const e of GRAPH.edges){
+    const dx=e.b.x-e.a.x,dy=e.b.y-e.a.y
+    const d=Math.hypot(dx,dy)||0.01
+    const f=(d-70)*0.02*alpha
+    e.a.x+=dx/d*f;e.a.y+=dy/d*f;e.b.x-=dx/d*f;e.b.y-=dy/d*f
+  }
+  // 向项目核心收拢，避免飘走
+  for(const n of GRAPH.nodes){
+    if(n.type==='project'){n.x+=(n.homeX-n.x)*0.02;n.y+=(n.homeY-n.y)*0.02}
+  }
+}
+function runForce(){
+  GRAPH.nodes.forEach(n=>{n.homeX=n.homeX??n.x;n.homeY=n.homeY??n.y})
+  let ticks=0
+  const tick=()=>{
+    if(GRAPH.layout!=='force'||ticks>240) return
+    ticks++
+    if(ticks<40) stepForce(1)
+    else if(ticks%5===0) stepForce(0.35)
+    drawGraph();requestAnimationFrame(tick)
+  }
+  tick()
+}
+function resetLayout(){buildGraph();GRAPH.tx=0;GRAPH.ty=0;GRAPH.k=1;if(GRAPH.layout==='force')runForce()}
+
+/* ── Canvas 渲染 ── */
+const cv=$('#cv'),ctx=cv.getContext('2d')
+let CW=0,CH=0
+function sizeCanvas(){
+  const wrap=$('#gwrap');const r=wrap.getBoundingClientRect()
+  const dpr=window.devicePixelRatio||1
+  CW=r.width;CH=r.height
+  cv.width=Math.max(1,r.width*dpr);cv.height=Math.max(1,r.height*dpr)
+  ctx.setTransform(dpr,0,0,dpr,0,0)
+  drawGraph()
+}
+const isDim=n=>{
+  if(!GRAPH.levels.has(n.level)&&n.type==='memory') return true
+  return false
+}
+function visible(e){return GRAPH.edgesOn[e.type]!==false&&!dimEdge(e)}
+function dimEdge(e){
+  const a=e.a.type==='memory'?e.a:e.b.type==='memory'?e.b:null
+  return a?isDim(a):false
+}
+function drawGraph(){
+  if(!GRAPH.on) return
+  const focus=GRAPH.hover||GRAPH.sel
+  const near=new Set()
+  if(focus){near.add(focus.id);for(const x of(GRAPH.adj.get(focus.id)||[]))near.add(x.n.id)}
+  ctx.clearRect(0,0,CW,CH)
+  // 星空背景
+  ctx.save()
+  for(let i=0;i<110;i++){
+    const x=(i*97.13)%CW,y=(i*53.7)%CH
+    ctx.globalAlpha=0.05+((i*37)%10)/100
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(x,y,0.9,0,7);ctx.fill()
+  }
+  ctx.restore()
+  ctx.save()
+  ctx.translate(GRAPH.tx,GRAPH.ty);ctx.scale(GRAPH.k,GRAPH.k)
+  // 星系光晕
+  for(const n of GRAPH.nodes){
+    if(n.type!=='project') continue
+    const g=ctx.createRadialGradient(n.x,n.y,4,n.x,n.y,150)
+    g.addColorStop(0,'rgba(122,162,247,.10)');g.addColorStop(1,'rgba(122,162,247,0)')
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(n.x,n.y,150,0,7);ctx.fill()
+  }
+  // 边
+  for(const e of GRAPH.edges){
+    if(!visible(e)) continue
+    const dim=focus&&!(near.has(e.a.id)&&near.has(e.b.id))
+    ctx.globalAlpha=dim?0.05:(e.type==='project'?0.26:e.type==='similar'?0.3:0.34)
+    ctx.strokeStyle=e.type==='project'?'#7aa2f7':e.type==='similar'?'#bb9af7':'#7dcfff'
+    ctx.lineWidth=(e.type==='session'?1.1:0.9)/GRAPH.k
+    ctx.setLineDash(e.type==='similar'?[3,4]:[])
+    ctx.beginPath();ctx.moveTo(e.a.x,e.a.y);ctx.lineTo(e.b.x,e.b.y);ctx.stroke()
+  }
+  ctx.setLineDash([])
+  // 节点
+  for(const n of GRAPH.nodes){
+    if(n.type==='memory'&&isDim(n)){ctx.globalAlpha=0.06}
+    else if(focus) ctx.globalAlpha=near.has(n.id)?1:0.14
+    else ctx.globalAlpha=1
+    const col=n.type==='project'?LCOLOR.project:n.type==='session'?LCOLOR.soul:(LCOLOR[n.level]||LCOLOR.none)
+    ctx.fillStyle=col
+    if(n.type==='project'){
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,7);ctx.lineWidth=2/GRAPH.k;ctx.strokeStyle=col;ctx.stroke()
+      ctx.beginPath();ctx.arc(n.x,n.y,3,0,7);ctx.fill()
+    }else if(n.type==='session'){
+      ctx.fillRect(n.x-6,n.y-6,12,12)
+    }else{
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,7);ctx.fill()
+      if(focus&&near.has(n.id)&&n.id!==focus.id){ctx.lineWidth=1.2/GRAPH.k;ctx.strokeStyle='#e0af68';ctx.stroke()}
+    }
+  }
+  // 标签
+  ctx.globalAlpha=1
+  ctx.font='11px "Noto Sans CJK SC",sans-serif';ctx.fillStyle='#9aa5ce'
+  for(const n of GRAPH.nodes){
+    const show=n.type==='project'||n.type==='session'||(focus&&near.has(n.id))
+    if(!show) continue
+    ctx.textAlign=n.type==='project'?'center':'left'
+    ctx.fillText(n.type==='project'?n.label:(n.type==='session'?n.label:'#'+n.id.slice(0,6)),n.x,n.y+(n.type==='project'?-15:4))
+  }
+  // 选中环
+  if(focus){ctx.strokeStyle='#e0af68';ctx.lineWidth=1.6/GRAPH.k;ctx.beginPath();ctx.arc(focus.x,focus.y,focus.r+6,0,7);ctx.stroke()}
+  ctx.restore()
+  renderGraphStats()
+}
+function renderGraphStats(){
+  const c={project:0,similar:0,session:0}
+  for(const e of GRAPH.edges) if(visible(e)) c[e.type]++
+  $('#gstats').innerHTML='<span>节点 '+GRAPH.nodes.length+'</span><span>边 '+(c.project+c.similar+c.session)+'</span><span>结构 '+c.project+' / 相似 '+c.similar+' / 会话 '+c.session+'</span>'
+}
+function pick(mx,my){
+  let best=null,bd=1e9
+  for(const n of GRAPH.nodes){
+    if(n.type==='memory'&&isDim(n)) continue
+    const d=Math.hypot(n.x-mx,n.y-my)
+    const hit=n.type==='memory'?Math.max(8,n.r+4):Math.max(12,n.r+6)
+    if(d<hit&&d<bd){bd=d;best=n}
+  }
+  return best
+}
+const toWorld=(sx,sy)=>({x:(sx-GRAPH.tx)/GRAPH.k,y:(sy-GRAPH.ty)/GRAPH.k})
+function showInfo(n){
+  if(!n){$('#ginfo').classList.remove('on');return}
+  const box=$('#ginfo')
+  if(n.type==='memory'){
+    const m=n.mem
+    box.innerHTML='<h3>'+badge(m.level,m.sub)+'<span class="tag">'+(m.project||'未标记')+'</span>'+stars(m.importance)+'</h3>'+
+      '<p>'+esc(m.content)+'</p><div class="kw">'+m.keywords.map(k=>'<span>'+esc(k)+'</span>').join('')+'</div>'+
+      '<div class="drow" style="margin-top:8px"><span>邻接</span><span>'+n.deg+'（含项目/相似/会话）</span></div>'+
+      '<div class="drow"><span>时间</span><span>'+absTime(m.updatedAt)+'（'+relTime(m.updatedAt)+'）</span></div>'
+  }else if(n.type==='project'){
+    const cnt=GRAPH.nodes.filter(x=>x.cluster===n.label).length
+    box.innerHTML='<h3>'+badge('project')+' '+esc(n.label)+'</h3><p>该项目下 '+cnt+' 条记忆节点（原型已降采样）。</p>'+
+      '<button class="btn" onclick="switchView(\'workspace\')">在工作区视图中打开</button>'
+  }else{
+    box.innerHTML='<h3>'+badge('soul')+' 会话 '+esc(n.label)+'</h3><p>该窗口注入/检索/写过这些记忆（会话足迹）。</p>'
+  }
+  box.classList.add('on')
+}
+function switchView(v){
+  $('#seg').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.v===v))
+  document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v))
+  $('#hdrExtra').innerHTML=''
+  GRAPH.on=(v==='starmap')
+  if(v==='global') renderGlobal()
+  if(v==='workspace') renderWorkspace()
+  if(v==='starmap'){sizeCanvas();if(!GRAPH.nodes.length)resetLayout();else drawGraph()}
+}
+function renderGraphFilters(){
+  $('#glegend').innerHTML=LEVELS.map(l=>'<div><i style="background:'+LCOLOR[l]+'"></i>'+l+'</div>').join('')+
+    '<div style="margin-top:6px"><i style="background:'+LCOLOR.project+'"></i>项目核心</div><div><i style="background:'+LCOLOR.soul+'"></i>会话</div>'
+  $('#glevels').innerHTML=LEVELS.map(l=>'<button class="chip on" data-lv="'+l+'">'+l+'</button>').join('')
+  document.querySelectorAll('#glevels .chip').forEach(b=>b.onclick=()=>{
+    const l=b.dataset.lv
+    if(GRAPH.levels.has(l))GRAPH.levels.delete(l);else GRAPH.levels.add(l)
+    b.classList.toggle('on',GRAPH.levels.has(l));drawGraph()
+  })
+  document.querySelectorAll('#gfilters [data-e]').forEach(b=>b.onclick=()=>{
+    const t=b.dataset.e;GRAPH.edgesOn[t]=!GRAPH.edgesOn[t];b.classList.toggle('on',GRAPH.edgesOn[t]);drawGraph()
+  })
+  document.querySelectorAll('#gfilters [data-l]').forEach(b=>b.onclick=()=>{
+    GRAPH.layout=b.dataset.l
+    document.querySelectorAll('#gfilters [data-l]').forEach(x=>x.classList.toggle('on',x===b))
+    resetLayout();drawGraph()
+  })
+}
+/* Canvas 事件 */
+let dragging=false,lastX=0,lastY=0,moved=false
+cv.addEventListener('mousedown',e=>{dragging=true;moved=false;lastX=e.clientX;lastY=e.clientY;cv.classList.add('drag')})
+window.addEventListener('mouseup',()=>{dragging=false;cv.classList.remove('drag')})
+cv.addEventListener('mousemove',e=>{
+  if(dragging){GRAPH.tx+=e.clientX-lastX;GRAPH.ty+=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;moved=true;drawGraph();return}
+  const r=cv.getBoundingClientRect();const w=toWorld(e.clientX-r.left,e.clientY-r.top)
+  const n=pick(w.x,w.y)
+  if(n!==GRAPH.hover){GRAPH.hover=n;drawGraph()}
+  cv.title=n?(n.type==='memory'?n.mem.content.slice(0,60):n.label||''):''
+})
+cv.addEventListener('click',e=>{
+  if(moved) return
+  const r=cv.getBoundingClientRect();const w=toWorld(e.clientX-r.left,e.clientY-r.top)
+  const n=pick(w.x,w.y)
+  GRAPH.sel=n;showInfo(n);drawGraph()
+})
+cv.addEventListener('dblclick',()=>{GRAPH.tx=0;GRAPH.ty=0;GRAPH.k=1;drawGraph()})
+cv.addEventListener('wheel',e=>{
+  e.preventDefault()
+  const r=cv.getBoundingClientRect();const sx=e.clientX-r.left,sy=e.clientY-r.top
+  const before=toWorld(sx,sy)
+  GRAPH.k=Math.max(0.35,Math.min(2.6,GRAPH.k*(e.deltaY<0?1.12:0.9)))
+  const after=toWorld(sx,sy)
+  GRAPH.tx+=(after.x-before.x)*GRAPH.k;GRAPH.ty+=(after.y-before.y)*GRAPH.k
+  drawGraph()
+},{passive:false})
+window.addEventListener('resize',()=>{if(GRAPH.on)sizeCanvas()})
+function highlightByMem(id){/* 工作区列表 hover → 星图高亮（原型保留接口）*/}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   启动
+   ═══════════════════════════════════════════════════════════════════════════ */
+$('#seg').querySelectorAll('button').forEach(b=>b.onclick=()=>switchView(b.dataset.v))
+$('#wq').addEventListener('input',renderMemList)
+$('#q').addEventListener('input',e=>{
+  const v=e.target.value.trim()
+  if(!v) return
+  switchView('workspace');$('#wq').value=v;renderMemList()
+})
+document.querySelectorAll('.chip[data-f]').forEach(b=>b.onclick=()=>b.classList.toggle('on'))
+renderSidebarNav();renderGraphFilters();renderGlobal();renderWorkspace()
+setInterval(()=>{$('#fresh').textContent='刚刚更新'},60000)
+</script>
+</body>
+</html>

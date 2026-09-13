@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.27.0 (2026-09-13)
+
+### 记忆查看器：可视化查看全局 / 工作区 / 星图
+
+- **需求**（用户原话）：「现在没有一个可视化的记忆查看功能……1. 支持查看全局的情况。2. 支持能查看某一个工作区的情况。3. 如果现有的数据库的关联关系能支持星图，也可以同时支持星图查看的方式」。设计文档与 UI 稿：`docs/memory-viewer-design.md`、`docs/mockups/`（3 张 PNG/SVG + 可点原型）。
+- **入口（零 dsh 本体改动）**：客户端注册 `main`（keyed / root，中央面板，key=`meow-memory`）+ `sidebar.panellist`（list / root，侧栏「全局面板」图标，id 与 main 的 key 同名即自动配对）。两个 slot 的契约与用法取自 dsh 客户端 bundle 内那份机器可读的 slot 目录（`@deepseek-ai/dsh-cordis-client-runner`）。老宿主没有这两个 slot 时静默跳过，不影响折叠 UI / 月牙图标 / 设置页。
+- **宿主数据面（只读）**：新增一条 `prefix` 路由 `/meow-memory/api`，内部按 method + pathname 分发：`/context`、`/workspaces`、`/overview`、`/memories`、`/memory`、`/similar`、`/projects`、`/timeline`、`/dreams`、`/sessions`、`/search`、`/graph`。响应统一 `{ ok, data, meta:{ generatedAt, etag, partial } }`，支持 `If-None-Match` → 304（前端 60s 轮询几乎零成本），`partial` 列出读取失败的工作区（单库坏了不拖垮全局视图）。
+- **只读是硬约束**：跨工作区读取走 `new DatabaseSync(path, { readOnly: true })`（实测拒绝写、且**拒绝打开不存在的库** → 绝不误建别家的库）。刻意不复用 `getDb()`——它 `mkdirSync` + 建表 + 跑 `upgrade()`，全是写操作。`workspace` 参数一律过白名单（`workspaceRegistry.list().path` ∪ 会话窗口索引），非白名单 403。
+- **三层视图**：全局（跨工作区 KPI / 工作区卡 / 跨库最近更新 / 各库 `project=全局` 条目 / 健康检查 / 整理留痕 / 跨工作区搜索）；工作区（项目树 + 层级过滤 + BM25 检索 + 详情抽屉 + 相关记忆 + 时间线 / 留痕 / 会话足迹）；星图（Canvas，星座布局默认、力导向备选；结构边 / 相似边 / 会话读写边 / 取代边可分别开关；层级开关只改透明度不重算布局）。
+- **星图的数据基础（诚实版）**：结构边（`project` / `source_session`，字段直出，确定）；相似边（关键词倒排取候选 + bigram 余弦，需阈值 + 每节点 topK 剪枝，概率性）；会话边（`sessions/<id>.json` 的注入/检索/查阅/写过痕迹）；取代边（同层 + 高相似 + 一新一旧）。**表里没有声明式 `links` 列**，所以"记忆间引用"只能推断——真知识图谱需要 v2 加字段。超上限时降采样并在 `stats.truncated` 标记，不静默丢数据。
+- **既有路径零回归**：`/similar` 复用 `bm25.findSimilar`、检索复用 `bm25.search`，保证"人看到的排序 = 模型看到的排序"；客户端 JSX 走经典转换（`jsxFactory: h`）+ 只依赖 `react`，不赌宿主是否提供 `react/jsx-runtime`。
+
+### 渲染烟雾测试抓到的两个真 bug（无浏览器环境下）
+
+自建了一个带 hooks/effect 的迷你渲染器（`tests/client-viewer-render.mjs`），把三个视图真的渲染一遍，当场抓到两个**只有运行期才会暴露**的缺陷（esbuild 与既有测试都看不见）：
+
+1. **`StarMapView` effect 依赖数组 TDZ**：`useEffect(..., [graph, layout, requestDraw])` 写在 `requestDraw`（`useCallback`）声明之前——依赖数组在渲染期求值，`const` 尚在 TDZ → 一切到星图就 `ReferenceError: Cannot access 'requestDraw' before initialization`。修法：把 `draw` / `requestDraw` 提到所有 effect 之前（并在 `byId`/`dim`/`edgeVisible` 之后）。
+2. **`ui.tsx` 漏 import**：`memoryMetaRows()` 用了 `STATUS_LABELS` 却没引入 → 点开详情抽屉即 `ReferenceError`。修法：补 import。
+
+同时接入 `npm run typecheck`（tsc --noEmit；仓库原先没有本地类型检查），用它复查了 TS2304（未定义标识符）/ TS2448 / TS2454 / TS2552（声明前使用）四类致命错误：**全仓库已归零**。
+
+### 顺带修复：memory_* 工具给模型的 id 改为完整 36 位（同毫秒前缀歧义）
+
+- **背景**：id = base36 毫秒(9 位) + '-' + 26 位随机 → **同一毫秒创建的多条前 10 位完全相同**（8 位前缀 ≈ 36ms 窗口）。dream 一轮批量写多条时很容易落在同一毫秒。
+- **危害**：`memory_remember` 读回只给 8 位、`memory_find_similar` 只给 12 位、`memory_update` 确认只给 8 位——模型拿这些短 id 再调 `memory_read` / `memory_update` 时，`findById` 的 LIKE 前缀匹配按层序返回第一条，可能**读错/改错**同毫秒的兄弟条目（update 是写操作，会静默改错条目）。
+- **修法**：这三处 render 一律给完整 id（`memory_search` / `memory_project` / 注入命中块 / dream 清单本来就给完整 id）；`findById` 改为「先全表精确、再前缀」，并在注释里写明**前缀歧义无法靠"精确优先"消除**（id 等长，完整 id 之间不存在前缀关系）——真正的护栏是工具层只给完整 id。
+- **测试**：+4 项断言（同毫秒两条共享前 10 位的前提、完整 id 精确命中不串、截断前缀确实有歧义、remember render 含完整 id）。主套件 405 → 409。
+
+### 测试
+
+- 新增 `tests/viewer.mjs`（60 项，host：白名单拒绝、只读不建库、聚合数字、检索/过滤、项目分组、留痕/足迹、星图拓扑、ETag/304）、`tests/client-viewer.mjs`（45 项，纯逻辑：展示映射、星座布局确定性、力导向收敛、命中测试、过滤谓词、API 错误映射）、`tests/client-viewer-render.mjs`（31 项，迷你渲染器：三个视图真渲染 + 数据流落进 DOM 树 + 交互回调连通）、`tests/client-viewer-mount.mjs`（16 项，加载 `lib/client.js` 跑 apply，断言 **main.key === panellist.id** 的配对契约与 disposer）。
+- 全量：主套件 405 + 查看器 60 + 纯逻辑 45 + 渲染 31 + 挂载 16 + 4 个既有 client 套件，全绿；`npm test` 已接入全部新套件。
+- **测试去抖动**（两处，都是实测抓到的偶发失败）：
+  1. 用固定 sleep 等异步响应 → 并发跑全套时偶发空响应（`tests/viewer.mjs` 58/2）。改为等 `res.end` 真正发生 / 在途 fetch 清零。
+  2. 夹具用 `list('fact')[0]` 取条目 → **同一毫秒插入的多行 `created_at` 相同，`ORDER BY created_at DESC` 的并列顺序不保证**，有时取到那条 archived fact（关键词数不对、也不进星图），导致"元数据齐全 / 星图会话边"两项随机失败。改为按内容选取。
+  连跑三次全量：全绿。
+
 ## v0.26.0 (2026-09-10)
 
 ### 反思/梦境任务独立成轮（dsh 0.1.5 工作汇报被折叠的根治）

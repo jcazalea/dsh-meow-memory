@@ -86,6 +86,13 @@
   折叠成「▸ 已注入记忆（长期记忆/关键词命中）」横条（与用户气泡同宽），点开可查看
   注入全文；用户 prompt 以气泡形式直接显示，消息流干净不被注入刷屏。纯文本消息才折叠
   （带附件的保持原样）。
+- **记忆查看器（client 端，v0.27.0）**：侧栏「全局面板」区多一个**记忆图标**，点开是
+  全幅的记忆浏览器——**全局**（跨工作区 KPI、工作区卡、跨库最近更新、各库
+  `project=全局` 条目、健康检查、整理留痕、跨工作区搜索）/ **工作区**（项目树 + 层级
+  过滤 + BM25 检索 + 详情抽屉 + 相关记忆 + 时间线/留痕/会话足迹）/ **星图**（Canvas：
+  星座布局默认、力导向备选；结构边/相似边/会话读写边/取代边可分别开关，层级开关只改
+  透明度不重算布局）。**纯只读**：跨工作区读取用 `node:sqlite` 只读连接（不建库、不写
+  他库），工作区参数过白名单。详见下方「记忆查看器」。
 - **反思轮折叠 UI（client 端）**：记忆反思/dream 轮的 prompt 与后续 think/tool call/汇报
   折叠成一条横条（默认折叠，显示「新增记忆 N 条」/「记忆梦境任务」），点击向下展开成
   卡片查看完整记录——卡片内 Think / tool call / 上下文注入均可点开查看细节。
@@ -210,13 +217,70 @@ dsh plugin --profile web remove meow-memory
  首轮不做命中
 ```
 
+## 🔭 记忆查看器（v0.27.0）
+
+**入口**：左侧栏「全局面板」区多一个记忆图标（`sidebar.panellist`）——点它，中央区域切到记忆查看器（`main` 面板，key = `meow-memory`）。零 dsh 本体改动：两个 slot 都是官方扩展点，id/key 同名即自动配对。
+
+**三层视图**
+
+| 视图 | 内容 |
+| --- | --- |
+| 全局 | 跨工作区 KPI（工作区/记忆总数/本周新增/项目/待整理窗口/已完结+删除）、每个工作区的层级堆叠条与 dream 状态、跨库最近更新、各库 `project="全局"` 条目（标注来源工作区）、健康检查（无关键词 / 超期准则 / 疑似重复 / 未完成 todo）、整理留痕；搜索框跨工作区检索 |
+| 工作区 | 左：项目树 + 层级过滤；中：记忆列表（服务端过滤：level/status/project/天数/BM25 检索）；右：详情抽屉（原文全文 + 全量元数据 + 相关记忆 `findSimilar`）；底部标签：时间线 / 整理留痕 / 会话足迹 |
+| 星图 | Canvas 绘制。默认**星座布局**（项目=星系核心、level=分层半径、时间=角度，确定性可复现），可切力导向；边分四类可分别开关；层级开关只改透明度、不重算布局（位置稳定） |
+
+**数据面**（宿主 `prefix` 路由 `/meow-memory/api`，全部只读）：
+
+```
+GET /context?sessionId=        会话 → 工作区 + 该会话记忆足迹
+GET /workspaces                工作区清单 + 摘要（层级分布/项目/dream 状态/读取失败原因）
+GET /overview                  跨工作区总览（KPI/层级/工作区卡/最近更新/全局条目/健康检查/留痕）
+GET /memories?workspace=&level=&status=&project=&q=&days=&importance=&sort=&limit=&offset=
+GET /memory?workspace=&id=     单条全量（支持截断 id 前缀，先精确后前缀）
+GET /similar?workspace=&id=&k= 相关记忆（复用 bm25.findSimilar）
+GET /projects | /timeline | /dreams | /sessions    项目分组 / 时间线 / 留痕+窗口 / 会话足迹
+GET /search?q=                 跨工作区检索
+GET /graph?scope=&workspace=&level=&edges=&threshold=&topK=&limit=   星图节点与边
+```
+
+统一响应 `{ ok, data, meta: { generatedAt, etag, partial } }`；带 `If-None-Match` 命中即 304（前端 60s 轮询几乎零成本）；`partial` 列出读取失败的工作区。
+
+**只读与安全（硬约束）**
+
+- 跨工作区读取用 `new DatabaseSync(path, { readOnly: true })`：拒绝写、**拒绝打开不存在的库**（不会给别的工作区误建库）。刻意**不复用 `getDb()`**——它会 `mkdirSync` + 建表 + 跑 `upgrade()`。
+- `workspace` 参数一律过白名单（`workspaceRegistry.list().path` ∪ 会话窗口索引），非白名单直接 403；路由只在本机 loopback 上暴露，记忆正文不写日志。
+- 单库损坏/无库只影响它自己：进 `meta.partial` / 返回 `no-db`，全局视图照常渲染其余工作区。
+
+**星图的边从哪来（诚实版）**
+
+| 边 | 来源 | 可靠性 |
+| --- | --- | --- |
+| 结构边 | `project`（含多值）、`source_session` 字段直出 | 确定 |
+| 相似边 | 关键词倒排取候选 + bigram 余弦，阈值 + 每节点 topK 剪枝 | 概率性（虚线绘制） |
+| 会话边 | `.dsh-meow/sessions/<id>.json` 的注入/检索/查阅/写过痕迹 | 确定（只覆盖痕迹文件还在的窗口） |
+| 取代边 | 同 level + 高相似 + 一新一旧（旧条目已非 active） | 推断 |
+
+数据库里**没有**声明式的"记忆 A 引用记忆 B"字段（没有 `links`/`refs` 列），所以记忆之间的关系只能推断；要做真正的知识图谱，需要在 v2 给表层加 `links`。节点/边超上限时自动降采样并在 `stats.truncated` 标记，不静默丢数据。
+
+> ⚠️ **升级提示**：插件是从 profile 的 `node_modules` 加载的，**改完 `lib/` 需要重启 `dsh web` 才会生效**（profile 插件不走 HMR）。重启后刷新页面即可看到侧栏「记忆」图标。
+>
+> 自检：`node scripts/check-viewer.mjs`（顺带打印每个工作区的条目数 / 星图规模 / ETag 是否生效）。返回 404 就说明宿主还在跑旧代码。
+
 ## 🛠 开发
 
 ```sh
 npm install
-npm run build          # esbuild 打包 → lib/index.js（自包含）
-npm run test           # 228 项逻辑测试：db / bm25 / migrate / inject / reflect / dream / tools / apply
+npm run build          # esbuild 打包 → lib/index.js（自包含）+ lib/client.js（浏览器 bundle）
+npm run test           # 557 项逻辑测试：主套件 405（db/bm25/migrate/inject/reflect/dream/tools/apply）
+                       #   + 记忆查看器 152（host 60 / 纯逻辑 45 / 组件渲染 31 / 打包产物挂载 16）
+                       #   + 既有 client 套件（折叠 / 委托气泡 / 图标 / 跳过）
+npm run typecheck      # tsc --noEmit（本地类型检查；存量 react/@dsh 运行时类型缺口已知）
 ```
+
+> 没有浏览器也能验证客户端：`tests/client-viewer-render.mjs` 自带一个迷你 React 渲染器
+> （hooks + effect + 桩 fetch），把三个视图真渲染一遍。它当场抓出过两个只在运行期暴露的
+> bug（effect 依赖数组引用后声明的 `useCallback` → TDZ；`ui.tsx` 漏 import）。改客户端代码后
+> 建议跑一遍 `npm run typecheck` 并用它复查 TS2304（未定义）/ TS2448 / TS2454 / TS2552（先用后声明）。
 
 `@deepseek-ai/*` 包位于 dsh-meow pnpm workspace 中，不在本包的 `node_modules` 里。
 在 Windows 上，`npm run link-workspace`（或 `scripts/link-workspace.ps1`）创建 workspace

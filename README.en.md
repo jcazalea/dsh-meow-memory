@@ -113,6 +113,16 @@ frozen at the last conversation timestamp.
   the report) collapse into a slim bar (collapsed by default, showing "N memories added" /
   "dream task"); clicking expands it into a card — Think / tool calls / context injections
   inside the card are expandable for details.
+- **Memory viewer (client, v0.27.0)**: a memory icon in the sidebar's global-panel area opens
+  a full-size browser — **Global** (cross-workspace KPIs, workspace cards, cross-DB recent
+  updates, each workspace's `project="全局"` entries, health checks, dream log, cross-workspace
+  search) / **Workspace** (project tree, layer filters, BM25 search, detail drawer with
+  `findSimilar` neighbours, timeline / dream log / session footprints) / **Star map** (Canvas:
+  constellation layout by default, force-directed as an option; structural / similarity /
+  session / supersede edges toggle independently; layer toggles only change opacity, so node
+  positions stay stable). **Strictly read-only**: cross-workspace reads use a `node:sqlite`
+  read-only connection (never creates or writes another workspace's DB) and the `workspace`
+  parameter is allow-listed.
 - **Session-list dream icon (client)**: sessions that have been dream-consolidated with no
   new conversation activity since show a **pale-yellow crescent-moon icon 🌙**; while a dream
   turn is running the moon **breathes white→gold** (sitting to the left of dsh's status dots,
@@ -240,6 +250,20 @@ independent snapshot message    seen ids recorded
   injected once per             compaction signal → seen released
   session, no hits on turn 1
 ```
+
+## 🔭 Memory viewer (v0.27.0)
+
+**Where**: the sidebar's global-panel area gains a memory icon (`sidebar.panellist`); clicking it swaps the centre panel to the viewer (`main` slot, key = `meow-memory`). Both are official dsh extension points — the id/key match is what pairs them — so no dsh changes are needed.
+
+**Three views**: Global (cross-workspace KPIs, workspace cards, cross-DB recent updates, per-workspace `project="全局"` entries, health checks, dream log, cross-workspace search) · Workspace (project tree, layer/status/day filters, server-side BM25 search, detail drawer with full metadata and `findSimilar` neighbours, plus timeline / dream log / session-footprint tabs) · Star map (Canvas; constellation layout by default, force-directed optional; structural / similarity / session-read-write / supersede edges toggle independently).
+
+**Read-only data face** — one `prefix` route `/meow-memory/api`: `context`, `workspaces`, `overview`, `memories`, `memory`, `similar`, `projects`, `timeline`, `dreams`, `sessions`, `search`, `graph`. Responses are `{ ok, data, meta: { generatedAt, etag, partial } }`; `If-None-Match` yields 304, and `partial` lists workspaces that failed to read (one broken DB never breaks the global view).
+
+**Read-only is a hard constraint**: cross-workspace reads open `new DatabaseSync(path, { readOnly: true })` — it refuses writes *and* refuses to open a missing file, so another workspace's DB can never be created or mutated. The plugin deliberately does **not** reuse `getDb()` (that one `mkdirSync`s, creates tables and runs migrations). The `workspace` parameter is always checked against the allow-list (`workspaceRegistry.list().path` ∪ session window index); anything else is 403.
+
+**Where star-map edges come from**: structural edges (`project`, `source_session` — straight from fields), similarity edges (keyword inverted index + bigram cosine, thresholded and top-K pruned, drawn dashed), session edges (`sessions/<id>.json` injection/search/access/write traces) and supersede edges (same layer + high similarity + one superseded). There is **no declarative `links` column**, so inter-memory relations are inferred; a true knowledge graph would need a new field in v2. Node/edge caps trigger downsampling, reported via `stats.truncated`.
+
+> ⚠️ **Upgrading**: profile plugins are loaded from the profile's `node_modules`, so **a changed `lib/` only takes effect after restarting `dsh web`** (profile plugins do not hot-reload). After the restart, refresh the page. If you see "viewer data face unavailable", the host is still running the old code (`GET /meow-memory/api/workspaces` returns 404).
 
 ## 🛠 Development
 
