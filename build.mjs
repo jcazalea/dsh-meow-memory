@@ -47,6 +47,12 @@ const clientOptions = {
   // react 走 shell 单例（ModuleLoader 的 require 解析到 seed 里的 react），
   // 不能打进 bundle——否则双 React 实例会崩掉 slots 渲染。
   external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
+  // JSX：走经典转换（jsxFactory=h）而不是 automatic runtime——宿主 seed 是否提供
+  // 'react/jsx-runtime' 无从保证，而 'react' 已被现有客户端代码实证可用。
+  // 用 JSX 的模块须 `import { createElement as h, Fragment } from 'react'`。
+  jsx: 'transform',
+  jsxFactory: 'h',
+  jsxFragment: 'Fragment',
   banner: {
     js: [
       'window.__ModuleLoader__.load({',

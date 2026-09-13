@@ -51,6 +51,7 @@ import { migrateLegacy } from './migrate.js'
 import { buildReflectMessage, consecutiveToolSteps, PLUGIN_SOURCE, REFLECT_MARKER, scanTurn } from './reflect.js'
 import { registerMemoryTools } from './tools.js'
 import { resolveSlotText, setPromptLang } from './prompt-loader.js'
+import { createViewerApi } from './viewer/routes.js'
 
 /** 首次欢迎引导的 seen 记账 id（accessed 通道，非真实记忆 id；releaseSeen 不清除）。 */
 const WELCOME_GUIDE_SEEN_ID = '__welcomeGuide__'
@@ -1072,6 +1073,40 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   }
   tryRegisterDreamRoutes(0)
 
+  // 4.5) 记忆查看器数据面（v0.27.0）：只读 JSON API，供客户端「记忆」面板使用。
+  //    - prefix 路由 /meow-memory/api 一条接住全部端点（内部按 method+pathname 分发）；
+  //    - 数据面只读：跨工作区读取走 node:sqlite readOnly（绝不复用会建表迁移的 getDb）；
+  //    - workspace 参数一律过白名单（workspaceRegistry.list().path ∪ 会话窗口索引）；
+  //    - 与其余可选服务同款：webServer 未就绪每 1s 重试 20 次，注册挂 ctx.effect，
+  //      dispose 时关掉全部只读句柄。
+  const viewerApi = createViewerApi({
+    ctx,
+    dir: resolved.projectDir,
+    windowWorkspaces: () => windowIndex.values(),
+    resolveSessionWorkspace: (sid) => resolveWorkspaceForSession(ctx, sid),
+  })
+  let viewerTimer = 0
+  const tryRegisterViewerApi = (attempt: number): void => {
+    const wsvc = (ctx as { get?: (name: string) => unknown }).get?.('webServer') as
+      | { register?: (route: { kind: 'prefix'; path: string; handler: (req: unknown, res: unknown) => void }) => () => void }
+      | undefined
+    if (wsvc !== undefined && typeof wsvc.register === 'function') {
+      try {
+        routeDisposers.push(ctx.effect(() => wsvc.register({ kind: 'prefix', path: '/meow-memory/api', handler: viewerApi.handler as never })))
+        ctx.logger.info('meow-memory: viewer api registered at /meow-memory/api')
+      } catch (e) {
+        ctx.logger.warn(`meow-memory: viewer api 注册失败: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      return
+    }
+    if (attempt < 20) {
+      viewerTimer = setTimeout(() => tryRegisterViewerApi(attempt + 1), 1000) as unknown as number
+    } else {
+      ctx.logger.warn('meow-memory: webServer 服务 20s 内未就绪，记忆查看器数据面未注册')
+    }
+  }
+  tryRegisterViewerApi(0)
+
   // 5) 用户命令 /dream（dsh 命令平面，可选服务）：输入框敲 /dream 手动唤起本窗口
   //    dream，斜杠菜单经 commands.list 自动列出（零客户端改动）。commands 服务可能
   //    晚于本插件就绪（fiber 并发启动竞态，同 webServer 路由）→ 立即尝试 + 每 1s
@@ -1124,9 +1159,15 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
     }
     clearTimeout(routeTimer)
     clearTimeout(commandTimer)
+    clearTimeout(viewerTimer)
     stopDream()
     disposeDreamHeartbeats() // 热重载不残留 dream 租约心跳定时器
     broadcast.dispose()
+    try {
+      viewerApi.dispose() // 关闭跨工作区只读句柄
+    } catch {
+      /* 关库失败不阻塞清理链 */
+    }
     try {
       closeAllDbs()
     } catch {
@@ -1266,3 +1307,8 @@ export { buildReflectMessage, consecutiveToolSteps, scanTurn } from './reflect.j
 export { tokenize, stemEn, search, findSimilar, topicDrift, recencyWeight } from './bm25.js'
 export { fillTemplate, keyedValue, resolveSlotText, setPromptLang, getPromptLang, DEFAULT_LANG, SLOTS } from './prompt-loader.js'
 export { collectDreamRounds, buildDreamMessage, windowNeedsDream, DREAM_MARKER, noteActivity, hourInTimeZone, minutesInTimeZone, isDreamSuppressed, startWindowDream, resumeAndDream, advanceDream, abortDream, recoverInterruptedDream, dreamCommandDefinition, isSubagentAgent, dreamSweepOnce, type DreamConfig } from './dream.js'
+// 记忆查看器（v0.27.0）：数据面 + 纯计算层，导出供测试/其他插件复用
+export { createViewerApi } from './viewer/routes.js'
+export { ViewerRepository, ViewerReader, normKey } from './viewer/repository.js'
+export { buildOverview, queryMemories, projectSummaries as viewerProjectSummaries, unlabeledCounts } from './viewer/aggregate.js'
+export { buildGraph, GRAPH_DEFAULT_THRESHOLD, GRAPH_DEFAULT_TOPK } from './viewer/graph.js'

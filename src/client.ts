@@ -32,6 +32,7 @@ import { applyDelegateNotices, computeDelegateNotices, startDelegateStateSync, t
 import { startDreamIconManager } from './client-dream-icon.ts'
 import { startDreamSkipManager } from './client-dream-skip.ts'
 import { applySettingsPage } from './settings-page.ts'
+import { applyViewerPanel } from './client-viewer/index.ts'
 
 /** 折叠行标记（CSS 规则隐藏）。 */
 const FOLDED_ATTR = 'data-meow-memory-folded'
@@ -665,6 +666,13 @@ export function apply(ctx: any): () => void {
     applySettingsPage(ctx)
   } catch (e) {
     console.warn('[meow-memory] 设置页注册失败（不影响折叠与图标）：', e)
+  }
+  // 记忆查看器（v0.27.0）：main(key=meow-memory) 中央面板 + sidebar.panellist 图标配对。
+  // 老宿主没有这些 slot 时静默跳过（fail-open），不影响折叠/图标/设置页。
+  try {
+    disposers.push(applyViewerPanel(ctx))
+  } catch (e) {
+    console.warn('[meow-memory] 记忆查看器面板注册失败（不影响其余功能）：', e)
   }
   // CSS 常驻全局（不随组件卸载移除：折叠行的隐藏由 data 属性驱动，规则在即生效）。
   // 热重载时 dispose 不删 style，直接 append 会堆积多代规则——旧代规则（如假气泡
