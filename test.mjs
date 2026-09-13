@@ -99,6 +99,24 @@ const topicId = db.list('topic')[0].id
 check('update by prefix', db.update('topic', topicId.slice(0, 8), { status: 'active' }) &&
   db.list('topic', { status: 'active' }).length === 1)
 
+// 同毫秒创建的多条：完整 id 精确命中；截断前缀在同毫秒窗口内有残余歧义
+// （id = base36 毫秒(9 位) + '-' + 随机 → 同毫秒的前 10 位完全相同；工具层因此一律给完整 id）
+{
+  const ambRoot = mkdtempSync(join(tmpdir(), 'meow-amb-'))
+  const ambDb = new MemoryDb(memoryDbPath(ambRoot, '.dsh-meow'))
+  const sameMs = 1700000000000
+  const idA = newId(sameMs)
+  const idB = newId(sameMs)
+  ambDb.insert({ level: 'fact', id: idA, content: '同毫秒 A（fact）' })
+  ambDb.insert({ level: 'lesson', id: idB, content: '同毫秒 B（lesson）' })
+  check('同毫秒两条共享前 10 位（前提成立）', idA.slice(0, 10) === idB.slice(0, 10))
+  check('findById: 完整 id 精确命中，不串到同毫秒的兄弟条目', ambDb.findById(idB)?.row.content === '同毫秒 B（lesson）')
+  const ambiguous = ambDb.findById(idB.slice(0, 9))
+  check('findById: 截断前缀命中同毫秒条目（层序第一条，故不能作为模型句柄）', ambiguous !== undefined && ambiguous.row.id.slice(0, 9) === idB.slice(0, 9))
+  ambDb.close()
+  rmSync(ambRoot, { recursive: true, force: true })
+}
+
 // ── dream v2 数据层：时间前缀 id / 新列 / status 检索语义 / windows ────────
 check('newId time-prefixed', /^[0-9a-z]{9}-/.test(newId()) && newId().length === 36)
 const early = newId(Date.now() - 1000)
@@ -848,6 +866,8 @@ const remRes = await rememberTool.execute({ content: '读回确认测试关键�
 check('remember returns keywords', Array.isArray(remRes.keywords) && remRes.keywords.length > 0, JSON.stringify(remRes))
 check('remember returns project', remRes.project === 'dsh')
 check('remember render shows result', rememberTool.output.render({}, remRes)[0].text.includes('关键词：'))
+check('remember render 给完整 id（36 位；短 id 在同毫秒批量写入时会撞前缀）',
+  String(remRes.id).length === 36 && rememberTool.output.render({}, remRes)[0].text.includes(remRes.id))
 // remember 四必填：缺失逐个报错并引导重填
 const missP = await rememberTool.execute({ content: '缺参测试', level: 'fact' }, updCtx).catch((e) => String(e?.message ?? e))
 check('remember requires project', missP.includes('project 参数必填'))

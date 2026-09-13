@@ -130,7 +130,7 @@ function rememberTool(dir: string): ToolDefinition {
         const head = v.merged ? '✅ 已合并到已有条目' : '✅ 记忆已写入'
         return [{
           type: 'text' as const,
-          text: `${head}（${String(v.level ?? 'fact')}${typeof v.id === 'string' ? `，id=${v.id.slice(0, 8)}` : ''}）。${proj}${kw}无需重复调用本工具。`,
+          text: `${head}（${String(v.level ?? 'fact')}${typeof v.id === 'string' ? `，id=${v.id}` : ''}）。${proj}${kw}无需重复调用本工具。`,
         }]
       },
     },
@@ -416,7 +416,7 @@ function findSimilarTool(dir: string): ToolDefinition {
         const v = value as { hits?: Array<{ id?: string; level?: string; title?: string; content?: string; similarity?: number }> }
         return (v.hits ?? []).map((h) => ({
           type: 'text' as const,
-          text: `[${String(h.level ?? '')} ${String(h.id ?? '').slice(0, 12)}] 相似度 ${Number(h.similarity ?? 0).toFixed(3)} ${String(h.title ?? '')} ${String(h.content ?? '').slice(0, 80)}`,
+          text: `[${String(h.level ?? '')} ${String(h.id ?? '')}] 相似度 ${Number(h.similarity ?? 0).toFixed(3)} ${String(h.title ?? '')} ${String(h.content ?? '').slice(0, 80)}`,
         }))
       },
     },
@@ -575,7 +575,7 @@ function updateTool(dir: string): ToolDefinition {
       },
       render: (_args, value) => {
         const v = value as { ok?: boolean; level?: unknown; id?: unknown }
-        return [{ type: 'text' as const, text: v.ok ? `✅ 已更新（${String(v.level ?? '')} ${String(v.id ?? '').slice(0, 8)}）。` : '更新失败：未找到该记忆。' }]
+        return [{ type: 'text' as const, text: v.ok ? `✅ 已更新（${String(v.level ?? '')} ${String(v.id ?? '')}）。` : '更新失败：未找到该记忆。' }]
       },
     },
     async execute(args: unknown, exec: ToolRunContext) {

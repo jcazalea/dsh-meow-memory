@@ -331,13 +331,24 @@ export class MemoryDb {
     return full
   }
 
-  /** 跨表定位（UUID 全局唯一，扫描全部表）。id 支持 8 位前缀匹配
-   *  （快照/检索结果给的是截断 id；前缀碰撞时取第一个）。 */
+  /**
+   * 跨表定位（UUID 全局唯一，扫描全部表）。id 支持截断前缀（快照/检索结果给的是短 id）。
+   *
+   * 先全表精确匹配、再前缀匹配：完整 id 永远走精确命中，语义直白。
+   *
+   * ⚠️ **前缀匹配有残余歧义**：id 是「base36 毫秒(9 位) + '-' + 26 位随机」，同一毫秒内
+   * 创建的多条**前 10 位完全相同**（8 位前缀 ≈ 36ms 窗口），此时 LIKE 会返回层序第一条，
+   * 未必是调用方想要的那条。精确优先**不能**解决这一点——真正的护栏在工具层：
+   * 面向模型的 id 一律给完整 36 位（见 tools.ts 的 render），模型就不必依赖短 id。
+   */
   findById(id: string): { row: MemoryRow; level: Level } | undefined {
-    const prefix = id.length < 36
     for (const level of LEVELS) {
-      const sql = prefix ? `SELECT * FROM ${level} WHERE id LIKE ?` : `SELECT * FROM ${level} WHERE id = ?`
-      const r = this.db.prepare(sql).get(prefix ? `${id}%` : id) as Record<string, unknown> | undefined
+      const r = this.db.prepare(`SELECT * FROM ${level} WHERE id = ?`).get(id) as Record<string, unknown> | undefined
+      if (r) return { row: this.fromRow(level, r), level }
+    }
+    if (id.length >= 36) return undefined
+    for (const level of LEVELS) {
+      const r = this.db.prepare(`SELECT * FROM ${level} WHERE id LIKE ?`).get(`${id}%`) as Record<string, unknown> | undefined
       if (r) return { row: this.fromRow(level, r), level }
     }
     return undefined
