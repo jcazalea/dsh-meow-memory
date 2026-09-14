@@ -50,6 +50,7 @@ import { buildHitInjection, buildInjection, buildReinjection, clearReinjectPendi
 import { migrateLegacy } from './migrate.js'
 import { buildReflectMessage, consecutiveToolSteps, PLUGIN_SOURCE, REFLECT_MARKER, scanTurn } from './reflect.js'
 import { registerMemoryTools } from './tools.js'
+import { isSessionMemoryEnabled, resetSessionMemoryCache, setSessionMemoryEnabled } from './session-state.js'
 import { resolveSlotText, setPromptLang } from './prompt-loader.js'
 import { createViewerApi } from './viewer/routes.js'
 
@@ -564,6 +565,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   applyCount++
   perf(`apply #${applyCount} pid=${process.pid}`)
   loadWindowIndex(resolved.projectDir) // 恢复窗口索引（热重载/重启后旧窗口不失联）
+  resetSessionMemoryCache() // 会话记忆开关缓存以 DB 为准（热重载/重启后重建）
 
   // v0 会话一次性迁移（issue #13）：标记未迁移时体检全部会话并把 source.memory 搬进
   // sections.__meta__，完成后置位 .dsh-meow/migrate-v0-state.json，此后启动直接跳过。
@@ -757,6 +759,11 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
     const sid = sessionIdOfAgent(agent)
     const ws = workspaceOfAgent(agent)
 
+    // 会话级记忆开关（v0.28.0）：本会话禁用 → 不注入（首轮快照/关键词命中/压缩
+    // 重注入/首次语言引导全部跳过），fail-open 放行原始 decision。子代理已在上方
+    // return（不注入），此处只需管主会话自身。
+    if (ws && !isSessionMemoryEnabled(ws, sid, resolved.projectDir)) return decision
+
     // 真实用户消息（跳过插件通知等，source.kind='plugin' 的进不来）。
     const userMsgs = decision.messages.filter((m: { source?: { kind?: string } }) => m.source?.kind === 'user')
     if (userMsgs.length === 0) return decision // 工具轮/纯插件消息：不注入
@@ -897,6 +904,9 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
     const dreamTurn = wasDreamTurn(sessionEventsOf(agent.session))
     const wsTs = workspaceOfAgent(agent)
     const sidTs = sessionIdOfAgent(agent)
+    // 会话级记忆开关（v0.28.0）：本会话禁用 → 不反思。dream 轮仍需放行收尾
+    // （禁用发生在 dream 进行中的边角场景：advance/abort 走下方分支，清租约防僵尸）。
+    const sessionMemoryOn = wsTs !== null ? isSessionMemoryEnabled(wsTs, sidTs, resolved.projectDir) : true
     if (wsTs) {
       try {
         appendFileSync(join(wsTs, resolved.projectDir, 'dream-debug.log'), `[${new Date().toISOString()}] turn-stopping pid=${process.pid} sid=${shortSessionId(sidTs)} reason=${endReason ?? 'none'} wasDream=${dreamTurn}\n`)
@@ -922,6 +932,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
       return
     }
 
+    if (!sessionMemoryOn) return // 会话记忆已禁用：不反思
     if (!resolved.reflect) return
     const ws = workspaceOfAgent(agent)
     if (!ws) return
@@ -1062,7 +1073,42 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
           })()
         },
       })
-      ctx.logger.info('meow-memory: dreamed-sessions snapshot + dream-events SSE + skip-dreams routes registered')
+      // 会话级记忆开关（v0.28.0，composer「记忆」按钮的数据面）：
+      //    - GET  /meow-memory/session-memory?sessionId=… → { sessionId, enabled }
+      //      （无记录=启用，向后兼容；会话解析不到 → 404，客户端 fail-closed 隐藏按钮）；
+      //    - POST /meow-memory/session-memory { sessionId, enabled } → 写库 + 更新
+      //      内存缓存（同实例立即可见，跨实例 10s TTL 收敛）。总开关关闭时本路由
+      //      不注册（apply 早退）→ 客户端 GET 失败自动隐藏。
+      registerOne({
+        kind: 'exact',
+        path: '/meow-memory/session-memory',
+        handler: (req, res) => {
+          void (async () => {
+            try {
+              if ((req as { method?: string }).method === 'POST') {
+                const body = await readJsonBody(req) as { sessionId?: unknown; enabled?: unknown }
+                const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+                if (sessionId.length === 0) return writeJson(res, 400, { ok: false, error: 'sessionId required' })
+                const ws = await resolveWorkspaceForSession(ctx, sessionId)
+                if (ws === null) return writeJson(res, 404, { ok: false, error: 'unknown session (no workspace)' })
+                const enabled = body.enabled !== false
+                setSessionMemoryEnabled(ws, sessionId, enabled, resolved.projectDir)
+                ctx.logger.info(`meow-memory: session memory ${enabled ? 'enabled' : 'disabled'} for ${shortSessionId(sessionId)}`)
+                return writeJson(res, 200, { ok: true, sessionId, enabled })
+              }
+              const sessionId = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('sessionId') ?? ''
+              if (sessionId === '') return writeJson(res, 400, { ok: false, error: 'sessionId required' })
+              const ws = await resolveWorkspaceForSession(ctx, sessionId)
+              if (ws === null) return writeJson(res, 404, { ok: false, error: 'unknown session (no workspace)' })
+              const enabled = isSessionMemoryEnabled(ws, sessionId, resolved.projectDir)
+              return writeJson(res, 200, { ok: true, sessionId, enabled })
+            } catch (e) {
+              writeJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) })
+            }
+          })()
+        },
+      })
+      ctx.logger.info('meow-memory: dreamed-sessions snapshot + dream-events SSE + skip-dreams + session-memory routes registered')
       return
     }
     if (attempt < 20) {
@@ -1300,6 +1346,7 @@ function persistWindowIndex(): void {
 export { PLUGIN_SOURCE, REFLECT_MARKER }
 export { parseModelSpec, REFLECT_DELEGATE_MARKER, REFLECT_DONE_DELEGATE_MARKER, DREAM_DELEGATE_MARKER } from './delegate.js'
 export { collectDreamStates, headerOf, type PersistedSessionLike } from './dream-signal.js'
+export { isSessionMemoryEnabled, setSessionMemoryEnabled, resetSessionMemoryCache } from './session-state.js'
 export { MemoryDb, memoryDbPath, getDb, closeAllDbs, LEVELS, newId, PROJECT_SUBCATEGORIES, projectList, projectCovers, projectLabel, relativeTime, isGlobalProject, globalProjectMarker, GLOBAL_PROJECT_CANON } from './db.js'
 export { migrateLegacy } from './migrate.js'
 export { buildHitInjection, buildInjection, buildReinjection, buildProjectSectionText, readSeen, markSearched, markAccessed, readInjected, markInjected, markProjectQueried, readProjectQueried, markWritten, readWritten, markReinjectPending, clearReinjectPending, isReinjectPending, MAX_REINJECT_PROJECTS, MAX_REINJECT_WRITTEN, sessionsFile, getCurrentProject, setCurrentProject, releaseSeen } from './inject.js'

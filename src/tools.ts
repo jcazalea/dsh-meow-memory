@@ -12,6 +12,7 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { findSimilar, search, tokenize, type RankedHit } from './bm25.js'
 import { getDb, getDreamWorkspace, globalProjectMarker, isGlobalProject, projectCovers, projectLabel, projectList, relativeTime, type Level, LEVELS, type MemoryPatch, type MemoryRow, type ProjectSubcategory, PROJECT_SUBCATEGORIES } from './db.js'
 import { fillTemplate, keyedValue } from './prompt-loader.js'
+import { isSessionMemoryEnabled } from './session-state.js'
 
 /** tools.md 键值取用（prompt 文案外置 v0.19.0）：缺键时 keyedValue throw。 */
 const T = (key: string): string => keyedValue('tools', key)
@@ -680,10 +681,27 @@ function projectTool(dir: string): ToolDefinition {
 }
 
 export function registerMemoryTools(register: (t: ToolDefinition) => void, dir = '.dsh-meow'): void {
-  register(rememberTool(dir))
-  register(searchTool(dir))
-  register(findSimilarTool(dir))
-  register(readTool(dir))
-  register(updateTool(dir))
-  register(projectTool(dir))
+  // 会话级记忆开关门禁（v0.28.0）：会话禁用时所有 memory_* 工具统一报错。
+  // 包一层 execute 而非逐工具手插——一处实现、注册即生效；workspace/sessionId
+  // 取不到（异常宿主）时放行，交给工具自身的参数校验兜底。
+  const gate = (t: ToolDefinition): ToolDefinition => {
+    const inner = t.execute
+    return {
+      ...t,
+      execute: async (args, exec) => {
+        const ws = workspaceOf(exec)
+        const sid = sessionIdOf(exec)
+        if (ws && sid && !isSessionMemoryEnabled(ws, sid, dir)) {
+          throw new Error(L('memory.disabled', { tool: t.name }))
+        }
+        return inner(args, exec)
+      },
+    }
+  }
+  register(gate(rememberTool(dir)))
+  register(gate(searchTool(dir)))
+  register(gate(findSimilarTool(dir)))
+  register(gate(readTool(dir)))
+  register(gate(updateTool(dir)))
+  register(gate(projectTool(dir)))
 }

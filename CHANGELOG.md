@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.28.0 (2026-09-13)
+
+### 会话级记忆开关：composer 输入框旁的「记忆」拨动开关（启用/禁用）
+
+- **需求**（用户原话）：「目前这个插件只有一个总开关，我想要新增一个会话级别的开关。即为：在对话的发送消息的对话位置，增加一个按钮'记忆'，有两个选项：启用、禁用。启用：则允许发起记忆的处理；禁用：则不允许发起记忆的处理。包含：记忆的检索、记忆的生成等。」流程：先出设计图+方案（`docs/session-memory-toggle/`：design.md + mockup.svg/png + 可交互 mockup.html），确认后实施；交互形态拍板为**两态拨动开关**（无弹层，点击直接切换），工具行为拍板为**返回禁用提示错误**。
+- **双层开关**：`总开关 enabled（设置页/配置，全局）→ 会话开关「记忆」（composer，每会话）→ 记忆链路`。总开关关 = 全部停用（现状不变）；总开关开 = 每会话可单独启用/禁用；**默认启用**（无记录 = 启用）→ 与现状行为完全一致，向后兼容。
+- **前端（零 dsh 本体改动）**：`MemoryToggleDock` 注册 `conversation.input.right`（list/session，恰好渲染在发送按钮前的工具行）——两态胶囊按钮（绿点=启用/灰点=禁用），单击直接切换；`MemoryDisabledNotice` 注册 `conversation.input.dock`（composer 卡片上方全宽）——禁用时显示一行提示条「本会话记忆已禁用：不注入 · 不检索 · 不生成」。会话 id 取 `useSessions(state => state.current)`（与 header 隐身哨兵/查看器面板同款）；共享状态模块让开关与提示条即时联动；GET/POST 失败一律 fail-closed 隐藏，绝不把异常抛进宿主 UI。
+- **宿主数据面**：新增 `session_state` 表（`session_id` PK + `memory_enabled` + `updated_at`，沿用 dream_skip 模式，只存禁用会话）；路由 `GET/POST /meow-memory/session-memory`（沿用 skip-dreams 的 POST+readJsonBody 模式，会话→工作区解析失败 404）。热路径走内存缓存（TTL 10s，多实例共享库 10s 内收敛），apply 时以 DB 为准重建。
+- **禁用时的拦截面**（`preStepInject` 全部注入分支 / `turnStoppingCore` 反思 / `dreamSweepOnce` + `resumeAndDream` 自动 dream / 六个 `memory_*` 工具 + `memory_dream` 工具 + `/dream` 命令）：注入、命中、压缩重注入、首次引导、反思、自动 dream 全跳过；工具返回 `memory.disabled` 文案（语言包 zh/en）提示可恢复，模型不会静默绕开；子代理经 `sessionIdOf` 归父窗口，父禁用则子代理工具同样被拦。查看器面板与设置页保持可用（用户显式动作，不在禁用范围）。
+- **测试**：主套件 +15（db 层默认/往返/列表、缓存读库/写后可见/TTL 陈旧/reset 回库、工具门禁抛错与恢复、子代理继承、dream 扫描跳过与恢复、memory_dream 工具与 /dream 命令门禁）；新增 `tests/client-session-toggle.mjs`（13 项，纯逻辑：GET/POST 解析与失败语义、URL 编码、共享状态广播）。全量 424+60+45+31+16+24+22+13 全绿。
+
 ## v0.27.0 (2026-09-13)
 
 ### 记忆查看器：可视化查看全局 / 工作区 / 星图

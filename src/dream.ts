@@ -36,7 +36,8 @@ import { join } from 'node:path'
 import { getDb, projectList, type Level, type MemoryRow } from './db.js'
 import { fillTemplate, keyedValue, resolveSlotText } from './prompt-loader.js'
 import { readSeen, readWritten } from './inject.js'
-import { workspaceOf } from './tools.js'
+import { sessionIdOf, workspaceOf } from './tools.js'
+import { isSessionMemoryEnabled } from './session-state.js'
 import { DEFAULT_RULES_REVIEW_DAYS } from './defaults.js'
 
 const PLUGIN_SOURCE: MessageSource = { kind: 'plugin', plugin: 'meow-memory' }
@@ -489,6 +490,12 @@ export function dreamTool(ctx: Context, dir = '.dsh-meow', onDreamState?: DreamS
     async execute(_args: unknown, exec: ToolRunContext) {
       const workspace = workspaceOf(exec)
       if (!workspace) throw new Error('memory_dream: 无法确定工作区（会话无 cwd）')
+      // 会话级记忆开关（v0.28.0）：本会话禁用时手动 dream 也不允许（手动=明确意愿，
+      // 但"禁用=不允许发起任何记忆处理"的语义优先，与其余 memory_* 工具同口径）。
+      const dreamSid = sessionIdOf(exec)
+      if (dreamSid && !isSessionMemoryEnabled(workspace, dreamSid, dir)) {
+        return { ok: false, note: '本会话记忆已禁用，memory_dream 不可用——点输入框旁的「记忆」按钮可重新启用。' }
+      }
       if (!exec.agent) throw new Error('memory_dream: 无法确定当前 agent')
       if (isSubagentAgent(exec.agent)) {
         // 子代理没有独立记忆窗口：写记忆归属父窗口，dream 也归父窗口（2026-09-05
@@ -555,6 +562,10 @@ export function dreamCommandDefinition(ctx: Context, dir = '.dsh-meow', onDreamS
       }
       if (typeof header?.id !== 'string' || header.id.length === 0) {
         return { kind: 'error', text: '/dream 无法确定当前窗口的会话 id。' }
+      }
+      // 会话级记忆开关（v0.28.0）：禁用时 /dream 也不可用（与 memory_dream 工具同口径）。
+      if (!isSessionMemoryEnabled(workspace, header.id, dir)) {
+        return { kind: 'error', text: '本会话记忆已禁用，/dream 不可用——点输入框旁的「记忆」按钮可重新启用。' }
       }
       const ok = startWindowDream(ctx, agent, workspace, dir, onDreamState, rulesReviewDays)
       if (ok) return { kind: 'success', text: '🧠 dream 已触发：整理任务已在后台运行，会话流中的任务气泡会显示进度与完成状态。' }
@@ -751,6 +762,8 @@ export async function resumeAndDream(ctx: Context, sessionId: string, workspace:
       log(`check resume skip-subagent sid=${sid}`)
       return // 子代理会话不是 dream 目标（dream 只归主窗口）
     }
+    // 会话级记忆开关（v0.28.0）：本会话禁用 = 恢复后也不 dream。
+    if (!isSessionMemoryEnabled(workspace, sessionId, dir)) return
     const db = getDb(workspace, dir)
     const w = db.getWindow(sessionId)
     if (!w || !windowNeedsDream(w)) return // 恢复期间超 24h / 已 dream 过
@@ -790,6 +803,8 @@ export function dreamSweepOnce(ctx: Context, cfg: DreamConfig, dir: string, wind
     // 只挡自动触发——/dream 命令与 memory_dream 工具（手动=明确意愿）不受限；
     // 租约过期补收尾也不受影响（清理语义，防僵尸租约堵死后续手动触发）。
     if (db.isDreamSkipped(sessionId)) continue
+    // 会话级记忆开关（v0.28.0）：本会话禁用 = 不自动 dream（手动触发另挡在工具/命令层）。
+    if (!isSessionMemoryEnabled(workspace, sessionId, dir)) continue
     const w = db.getWindow(sessionId)
     if (!w || !windowNeedsDream(w)) continue
     const lease = db.getDreamLease(sessionId)

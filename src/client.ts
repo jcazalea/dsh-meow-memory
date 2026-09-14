@@ -33,6 +33,7 @@ import { startDreamIconManager } from './client-dream-icon.ts'
 import { startDreamSkipManager } from './client-dream-skip.ts'
 import { applySettingsPage } from './settings-page.ts'
 import { applyViewerPanel } from './client-viewer/index.ts'
+import { MemoryDisabledNotice, MemoryToggleDock } from './client-session-toggle.ts'
 
 /** 折叠行标记（CSS 规则隐藏）。 */
 const FOLDED_ATTR = 'data-meow-memory-folded'
@@ -136,6 +137,58 @@ const FOLD_CSS = `[${FOLDED_ATTR}="true"] { display: none !important; }
 [data-meow-inj-copy]:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
+}`
+
+/** 会话级记忆开关（v0.28.0）：composer 工具行的「记忆」拨动开关 + 禁用提示条样式。 */
+const TOGGLE_CSS = `
+[data-meow-memory-toggle] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, rgba(190,190,190,.9));
+  border: 1px solid rgba(127,127,127,.22);
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+[data-meow-memory-toggle]:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08));
+}
+[data-meow-memory-toggle][data-meow-memory-toggle="on"] {
+  color: #4cd58b;
+  border-color: rgba(76,213,139,.65);
+}
+[data-meow-memory-toggle][data-meow-memory-toggle="on"]:hover {
+  background: rgba(76,213,139,.08);
+}
+[data-meow-memory-toggle][data-meow-memory-toggle="off"] {
+  color: var(--dsw-alias-label-tertiary, rgba(190,190,190,.6));
+}
+[data-meow-memory-toggle][data-meow-memory-toggle-busy] {
+  opacity: .6;
+  cursor: default;
+}
+[data-meow-memory-dot] {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+[data-meow-memory-notice] {
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-secondary, rgba(190,190,190,.9));
+  background: rgba(247,118,142,.08);
+  border: 1px solid rgba(247,118,142,.35);
+  border-radius: 8px;
 }`
 
 /** 卡片克隆签名缓存（groupId → 原始行文本签名）：展开时行内容更新/不完整则自愈重克隆。 */
@@ -683,7 +736,7 @@ export function apply(ctx: any): () => void {
   }
   const style = document.createElement('style')
   style.dataset.meowMemoryCss = 'true'
-  style.textContent = FOLD_CSS
+  style.textContent = FOLD_CSS + TOGGLE_CSS
   document.head.appendChild(style)
   const slots = ctx?.slots
   if (slots === undefined || typeof slots.inject !== 'function') {
@@ -714,6 +767,35 @@ export function apply(ctx: any): () => void {
       },
       makeDelegateVanishDock(refreshSubagents),
     )))
+    // 会话级记忆开关（v0.28.0）：
+    //  - conversation.input.right：composer 工具行、发送按钮前的「记忆」拨动开关
+    //    （两态：启用/禁用，点击直接切换；useSessions 取当前会话 id）；
+    //  - conversation.input.dock：composer 卡片上方的禁用提示条（本会话禁用时显示）。
+    //  老宿主没有这些 slot 时静默跳过（fail-open），不影响折叠/图标/设置页。
+    try {
+      disposers.push(slots.inject('conversation.input.right', () => slots.register(
+        {
+          name: 'conversation.input.right',
+          id: 'meow-memory',
+          order: 30,
+        },
+        MemoryToggleDock,
+      )))
+    } catch (e) {
+      console.warn('[meow-memory] 会话记忆开关（input.right）注册失败：', e)
+    }
+    try {
+      disposers.push(slots.inject('conversation.input.dock', () => slots.register(
+        {
+          name: 'conversation.input.dock',
+          id: 'meow-memory',
+          order: 30,
+        },
+        MemoryDisabledNotice,
+      )))
+    } catch (e) {
+      console.warn('[meow-memory] 会话记忆开关提示条（input.dock）注册失败：', e)
+    }
   }
   return () => {
     for (const dispose of disposers) {

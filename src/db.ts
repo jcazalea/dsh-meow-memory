@@ -223,6 +223,12 @@ export class MemoryDb {
       session_id TEXT PRIMARY KEY,
       created_at INTEGER NOT NULL
     )`)
+    // 会话级记忆开关（v0.28.0）：无记录 = 启用（默认，向后兼容）；memory_enabled=0 = 禁用。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS session_state (
+      session_id TEXT PRIMARY KEY,
+      memory_enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at INTEGER NOT NULL
+    )`)
     this.upgrade()
   }
 
@@ -582,6 +588,37 @@ export class MemoryDb {
   /** 全部被跳过的会话 id（client 全量对账用）。 */
   listDreamSkips(): string[] {
     return (this.db.prepare(`SELECT session_id FROM dream_skip`).all() as Array<{ session_id: string }>).map((r) => r.session_id)
+  }
+
+  // ── session_state 会话级记忆开关表（v0.28.0：用户按会话启用/禁用记忆处理） ──
+
+  /** 读取某会话的记忆开关：无记录 = 启用（默认语义，向后兼容）。 */
+  getSessionMemoryEnabled(sessionId: string): boolean {
+    const row = this.db.prepare(`SELECT memory_enabled FROM session_state WHERE session_id = ?`).get(sessionId) as
+      | { memory_enabled?: number }
+      | undefined
+    if (row === undefined) return true
+    return row.memory_enabled !== 0
+  }
+
+  /** 设置某会话的记忆开关：enabled=true 删除记录（回到默认语义，表里只留禁用会话）。 */
+  setSessionMemoryEnabled(sessionId: string, enabled: boolean): void {
+    if (enabled) {
+      this.db.prepare(`DELETE FROM session_state WHERE session_id = ?`).run(sessionId)
+    } else {
+      this.db
+        .prepare(`INSERT INTO session_state (session_id, memory_enabled, updated_at) VALUES (?, 0, ?)
+          ON CONFLICT(session_id) DO UPDATE SET memory_enabled = 0, updated_at = excluded.updated_at`)
+        .run(sessionId, Date.now())
+    }
+  }
+
+  /** 全部已禁用的会话（查看器/对账展示用）。 */
+  listDisabledSessions(): Array<{ session_id: string; updated_at: number }> {
+    return this.db.prepare(`SELECT session_id, updated_at FROM session_state WHERE memory_enabled = 0`).all() as Array<{
+      session_id: string
+      updated_at: number
+    }>
   }
 
   // ── 全局检查门（dream 定时器防叠加） ─────────────────────────────────────

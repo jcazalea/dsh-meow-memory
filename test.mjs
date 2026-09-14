@@ -61,6 +61,9 @@ import {
   isDreamSuppressed,
   collectDreamStates,
   sessionEventsOf,
+  isSessionMemoryEnabled,
+  setSessionMemoryEnabled,
+  resetSessionMemoryCache,
 } from './lib/index.js'
 
 let passed = 0
@@ -1632,6 +1635,85 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
 const { ctx: ctxOff, tools: toolsOff, handlers: handlersOff } = makeCtx()
 await apply(ctxOff, { enabled: false })
 check('disabled registers nothing', toolsOff.length === 0 && Object.keys(handlersOff).length === 0)
+
+// ═══════════════════ 会话级记忆开关（v0.28.0） ═══════════════════
+{
+  const wsS = mkdtempSync(join(tmpdir(), 'mm-sess-toggle-'))
+  const dbS = getDb(wsS, '.dsh-meow')
+
+  // ── db 层：无记录=启用；禁用→启用 往返 ──
+  check('session_state default enabled (no record)', dbS.getSessionMemoryEnabled('win-none') === true)
+  dbS.setSessionMemoryEnabled('win-a', false)
+  check('session_state disable persists', dbS.getSessionMemoryEnabled('win-a') === false)
+  check('session_state list contains disabled', dbS.listDisabledSessions().some((r) => r.session_id === 'win-a'))
+  dbS.setSessionMemoryEnabled('win-a', true)
+  check('session_state re-enable deletes row', dbS.getSessionMemoryEnabled('win-a') === true
+    && !dbS.listDisabledSessions().some((r) => r.session_id === 'win-a'))
+
+  // ── session-state 缓存层：读库默认 / 写后立即可见 / reset 回库 ──
+  resetSessionMemoryCache()
+  check('session-state cache reads db default', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === true)
+  setSessionMemoryEnabled(wsS, 'win-b', false, '.dsh-meow')
+  check('session-state cache reflects set', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === false)
+  dbS.setSessionMemoryEnabled('win-b', true) // 模拟跨实例直改库
+  check('session-state cache stale within TTL', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === false)
+  resetSessionMemoryCache()
+  check('session-state reset reloads db', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === true)
+
+  // ── 工具门禁：禁用会话调 memory_search 抛错；恢复后可用 ──
+  const gateSearch = tools.find((t) => t.name === 'memory_search')
+  const gateExec = { agent: { session: { header: { cwd: wsS, id: 'win-c' } } } }
+  setSessionMemoryEnabled(wsS, 'win-c', false, '.dsh-meow')
+  let gateErr = null
+  try { await gateSearch.execute({ query: '随便' }, gateExec) } catch (e) { gateErr = e }
+  check('memory_search throws when session disabled', gateErr !== null && String(gateErr.message).includes('记忆已禁用'), String(gateErr?.message))
+  setSessionMemoryEnabled(wsS, 'win-c', true, '.dsh-meow')
+  const gateOk = await gateSearch.execute({ query: '随便' }, gateExec)
+  check('memory_search works after re-enable', gateOk.hits !== undefined)
+
+  // ── 子代理继承：父会话禁用 → 子代理调工具同样被拦（sessionIdOf 归父窗口） ──
+  const subGateExec = { agent: { session: { header: { cwd: wsS, id: 'win-c-child', parentSession: 'win-c', origin: 'subagent' } } } }
+  setSessionMemoryEnabled(wsS, 'win-c', false, '.dsh-meow')
+  let subErr = null
+  try { await gateSearch.execute({ query: '随便' }, subGateExec) } catch (e) { subErr = e }
+  check('subagent inherits parent disabled', subErr !== null && String(subErr.message).includes('记忆已禁用'))
+  setSessionMemoryEnabled(wsS, 'win-c', true, '.dsh-meow')
+
+  // ── dream 自动扫描门禁：禁用会话跳过（不启动）；恢复后照常 ──
+  const wsD2 = mkdtempSync(join(tmpdir(), 'mm-sess-dream-'))
+  const dbD2 = getDb(wsD2, '.dsh-meow')
+  dbD2.touchWindow('win-e', wsD2, Date.now() - 4 * 3600_000) // 4h 前活动：满足 idle（180m）与 24h 内
+  dbD2.setSessionMemoryEnabled('win-e', false)
+  const sweepCfg = { enabled: true, idleMinutes: 180, suppressWindows: [], suppressLeadMinutes: 0, checkMinutes: 1, timeZone: 'Asia/Shanghai', rulesReviewDays: 2 }
+  let dreamStarts = 0
+  const sweepAgent = { session: { header: { id: 'win-e', cwd: wsD2, origin: undefined } }, steer: () => {}, followup: () => {} }
+  const sweepCtx = {
+    logger: { info: () => {}, warn: () => {} },
+    get: (name) => name === 'agents' ? { get: () => sweepAgent } : undefined,
+  }
+  resetSessionMemoryCache()
+  dreamSweepOnce(sweepCtx, sweepCfg, '.dsh-meow', new Map([['win-e', wsD2]]), () => { dreamStarts++ })
+  check('dream sweep skips disabled session', dbD2.getDreamLease('win-e') === null && dreamStarts === 0)
+  dbD2.setSessionMemoryEnabled('win-e', true)
+  resetSessionMemoryCache()
+  dreamSweepOnce(sweepCtx, sweepCfg, '.dsh-meow', new Map([['win-e', wsD2]]), () => { dreamStarts++ })
+  check('dream sweep dreams enabled session', dreamStarts > 0)
+  dbD2.finishDream('win-e', Date.now()) // 清理：收尾不留悬挂租约
+
+  // ── memory_dream 工具 / /dream 命令门禁：禁用会话返回明确提示 ──
+  const gateDreamTool = tools.find((t) => t.name === 'memory_dream')
+  setSessionMemoryEnabled(wsS, 'win-f', false, '.dsh-meow')
+  const rDreamTool = await gateDreamTool.execute({}, { agent: { session: { header: { cwd: wsS, id: 'win-f' } } } })
+  check('memory_dream tool blocked when disabled', rDreamTool.ok === false && String(rDreamTool.note).includes('记忆已禁用'), JSON.stringify(rDreamTool))
+  const cmdDef = dreamCommandDefinition(sweepCtx, '.dsh-meow')
+  const rCmd = await cmdDef.handler({ agent: { session: { header: { cwd: wsS, id: 'win-f' } } } })
+  check('/dream command blocked when disabled', rCmd.kind === 'error' && rCmd.text.includes('记忆已禁用'), JSON.stringify(rCmd))
+
+  dbS.close()
+  dbD2.close()
+  rmSync(wsS, { recursive: true, force: true })
+  rmSync(wsD2, { recursive: true, force: true })
+}
 
 db.close(); db2.close(); db3.close(); db4.close()
 dbW.close()
