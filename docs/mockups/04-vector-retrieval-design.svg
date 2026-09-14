@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1000" viewBox="0 0 1280 1000" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#565f89"/>
+    </marker>
+    <marker id="arrowcy" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#7dcfff"/>
+    </marker>
+    <marker id="arrowgr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#9ece6a"/>
+    </marker>
+    <linearGradient id="fusionGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#bb9af7" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#7aa2f7" stop-opacity="0.22"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="1000" fill="#1a1b26"/>
+
+  <!-- header -->
+  <text x="40" y="52" fill="#c0caf5" font-size="26" font-weight="600">meow-memory 向量检索（语义召回）可行性方案</text>
+  <text x="40" y="82" fill="#6b7394" font-size="14">v0.27.0 现状实测 · 本地小模型路线 · 每消息热路径不可阻塞是唯一硬约束</text>
+
+  <!-- ══════════════ PANEL A ══════════════ -->
+  <text x="40" y="132" fill="#7dcfff" font-size="17" font-weight="600">A · 注入链路：现状 vs 双通道</text>
+
+  <!-- user message -->
+  <rect x="40" y="152" width="240" height="62" rx="10" fill="#1f2335" stroke="#7aa2f7" stroke-width="1.5"/>
+  <text x="60" y="178" fill="#7aa2f7" font-size="14" font-weight="600">用户消息（每轮）</text>
+  <text x="60" y="199" fill="#9aa5ce" font-size="12.5">「为什么我改了代码没生效」</text>
+
+  <!-- split -->
+  <path d="M280 183 L 330 183" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============ 现状通道 ============ -->
+  <rect x="330" y="152" width="380" height="150" rx="12" fill="#16161e" stroke="#9ece6a" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="350" y="176" fill="#9ece6a" font-size="13.5" font-weight="600">现状通道（词法 · 已存在）</text>
+
+  <rect x="350" y="190" width="150" height="44" rx="8" fill="#1f2335" stroke="#3b4261"/>
+  <text x="364" y="210" fill="#c0caf5" font-size="12">tokenize（bigram）</text>
+  <text x="364" y="226" fill="#6b7394" font-size="11">语言无关，零依赖</text>
+
+  <rect x="520" y="190" width="170" height="44" rx="8" fill="#1f2335" stroke="#3b4261"/>
+  <text x="534" y="210" fill="#c0caf5" font-size="12">BM25 × 艾宾浩斯</text>
+  <text x="534" y="226" fill="#6b7394" font-size="11">idf×覆盖率×importance</text>
+
+  <path d="M500 212 L 516 212" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <text x="350" y="258" fill="#f7768e" font-size="12.5">⚠ 匹配面 = keywords（不是语义）· 词面不通即失明</text>
+  <text x="350" y="278" fill="#9aa5ce" font-size="11.5">实测：“改了代码没生效” → 该命中"profile 插件不热重载"，</text>
+  <text x="350" y="293" fill="#9aa5ce" font-size="11.5">词法只给出「用户对本项目的定位」（无关条目）</text>
+
+  <!-- ============ 新增语义通道 ============ -->
+  <rect x="330" y="320" width="640" height="150" rx="12" fill="#16161e" stroke="#7dcfff" stroke-width="1.5"/>
+  <text x="350" y="344" fill="#7dcfff" font-size="13.5" font-weight="600">新增通道（语义 · 待建）</text>
+
+  <rect x="350" y="358" width="150" height="44" rx="8" fill="#1f2335" stroke="#3b4261"/>
+  <text x="364" y="378" fill="#c0caf5" font-size="12">embed(用户消息)</text>
+  <text x="364" y="394" fill="#6b7394" font-size="11">384 维 · 需缓存/异步</text>
+
+  <rect x="520" y="358" width="170" height="44" rx="8" fill="#1f2335" stroke="#3b4261"/>
+  <text x="534" y="378" fill="#c0caf5" font-size="12">余弦 top-N 扫描</text>
+  <text x="534" y="394" fill="#6b7394" font-size="11">纯 JS，千条 &lt;0.5ms</text>
+
+  <path d="M500 380 L 516 380" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="710" y="358" width="240" height="44" rx="8" fill="#1f2335" stroke="#3b4261"/>
+  <text x="724" y="378" fill="#c0caf5" font-size="12">命中 id 去重 + 截断</text>
+  <text x="724" y="394" fill="#6b7394" font-size="11">排除本会话已见</text>
+
+  <path d="M690 380 L 706 380" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <text x="350" y="428" fill="#9ece6a" font-size="12.5">✓ 语义等价即可召回（改述 / 同义 / 跨语言）</text>
+  <text x="350" y="448" fill="#f7768e" font-size="12.5">⚠ 硬约束：pre-step 在每个 step 前同步执行 → 编码不得阻塞，超时必须降级回词法</text>
+
+  <!-- merge into fusion：走外侧绕开语义通道框 -->
+  <path d="M330 240 L 300 240 L 300 548 L 696 548" stroke="#9ece6a" stroke-width="1.5" fill="none" marker-end="url(#arrowgr)"/>
+  <path d="M986 380 L 1060 380 L 1060 548 L 1024 548" stroke="#7dcfff" stroke-width="1.5" fill="none" marker-end="url(#arrowcy)"/>
+
+  <!-- fusion -->
+  <rect x="700" y="500" width="320" height="96" rx="12" fill="url(#fusionGrad)" stroke="#bb9af7" stroke-width="1.5"/>
+  <text x="722" y="526" fill="#bb9af7" font-size="14" font-weight="600">融合层（唯一改动点）</text>
+  <text x="722" y="549" fill="#c0caf5" font-size="12">score = 词法分 + λ · 语义分</text>
+  <text x="722" y="569" fill="#9aa5ce" font-size="11.5">再乘 importance / 艾宾浩斯；同一 id 取大者</text>
+  <text x="722" y="587" fill="#6b7394" font-size="11">λ=0 时行为与 v0.27.0 完全一致（可回滚）</text>
+
+  <path d="M860 596 L 860 640" stroke="#bb9af7" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="680" y="644" width="360" height="52" rx="10" fill="#1f2335" stroke="#e0af68" stroke-width="1.5"/>
+  <text x="700" y="666" fill="#e0af68" font-size="13" font-weight="600">注入 top-2 命中</text>
+  <text x="700" y="685" fill="#9aa5ce" font-size="11.5">仍走独立 plugin snapshot 消息 · 不改写用户 prompt</text>
+
+  <!-- ══════════════ PANEL B : write path ══════════════ -->
+  <text x="40" y="740" fill="#e0af68" font-size="17" font-weight="600">B · 写入链路：向量从哪来、何时算</text>
+
+  <rect x="40" y="760" width="220" height="62" rx="10" fill="#1f2335" stroke="#e0af68" stroke-width="1.5"/>
+  <text x="60" y="786" fill="#e0af68" font-size="13" font-weight="600">memory_remember / update</text>
+  <text x="60" y="806" fill="#9aa5ce" font-size="11.5">以及 dream 封存批量写入</text>
+
+  <path d="M260 791 L 300 791" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="760" width="260" height="62" rx="10" fill="#1f2335" stroke="#3b4261"/>
+  <text x="318" y="786" fill="#c0caf5" font-size="12.5">同步算向量（写入时）</text>
+  <text x="318" y="806" fill="#6b7394" font-size="11.5">与 bm25 注释里的既定取舍一致</text>
+
+  <path d="M560 791 L 600 791" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="600" y="752" width="300" height="78" rx="10" fill="#16161e" stroke="#7dcfff" stroke-width="1.5"/>
+  <text x="618" y="776" fill="#7dcfff" font-size="12.5" font-weight="600">memory_vec 表（BLOB，Float32/Int8）</text>
+  <text x="618" y="796" fill="#9aa5ce" font-size="11.5">id / dim / vec / model / content_hash</text>
+  <text x="618" y="815" fill="#6b7394" font-size="11">不加声明式 links —— 与本项目"只存事实"一致</text>
+
+  <rect x="940" y="752" width="300" height="78" rx="10" fill="#16161e" stroke="#9ece6a" stroke-width="1.5"/>
+  <text x="958" y="776" fill="#9ece6a" font-size="12.5" font-weight="600">冷启动回填</text>
+  <text x="958" y="796" fill="#9aa5ce" font-size="11.5">首次升级：后台逐条补向量，写 memory_vec</text>
+  <text x="958" y="815" fill="#6b7394" font-size="11">未回填完 → 语义通道自动缺席，词法兜底</text>
+
+  <path d="M900 791 L 936 791" stroke="#565f89" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ══════════════ PANEL C : candidates ══════════════ -->
+  <text x="40" y="900" fill="#9ece6a" font-size="17" font-weight="600">C · 向量来源候选（本机实测结论）</text>
+
+  <rect x="40" y="918" width="390" height="62" rx="10" fill="#16161e" stroke="#f7768e" stroke-width="1.5"/>
+  <text x="58" y="941" fill="#f7768e" font-size="13" font-weight="600">云端 embedding API —— 不建议</text>
+  <text x="58" y="962" fill="#9aa5ce" font-size="11.5">破产原则：零依赖/不联网/本地隐私；每条记忆都要出网</text>
+
+  <rect x="450" y="918" width="390" height="62" rx="10" fill="#16161e" stroke="#e0af68" stroke-width="1.5"/>
+  <text x="468" y="941" fill="#e0af68" font-size="13" font-weight="600">本地 ONNX（transformers.js）—— 可行但有坑</text>
+  <text x="468" y="962" fill="#9aa5ce" font-size="11.5">实测：v4 的 onnxruntime-node 原生包本机装不上（302）</text>
+
+  <rect x="860" y="918" width="380" height="62" rx="10" fill="#16161e" stroke="#9ece6a" stroke-width="1.5"/>
+  <text x="878" y="941" fill="#9ece6a" font-size="13" font-weight="600">纯 JS 降级 —— 零依赖兜底</text>
+  <text x="878" y="962" fill="#9aa5ce" font-size="11.5">字符 n-gram / 同义词表 / topic 质心扩展，能力有限</text>
+</svg>
