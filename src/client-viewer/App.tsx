@@ -2,7 +2,8 @@
  * meow-memory 记忆查看器 — 面板根组件 + 全局视图。
  *
  * 形态：注册进 main(key=meow-memory) 的中央面板，与 sidebar.panellist 的图标配对
- * （点侧栏图标切到这里）。数据全部来自 /meow-memory/api/*（只读）。
+ * （点侧栏图标切到这里）。数据来自 /meow-memory/api/*（只读端点）+ POST /migrate-old
+ * （面板「迁移旧库」手动并入旧库——v0.29.1 起唯一写端点）。
  *
  * 失败一律 fail-open：网络断了、宿主没挂数据面、某个库坏了 → 渲染错误态/部分提示，
  * 绝不抛到宿主渲染树。
@@ -46,6 +47,39 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
   const [hits, setHits] = useState<Array<{ workspace: string; workspaceTitle: string; memory: MemoryDto }>>([])
   const [tick, setTick] = useState(0)
   const bootstrapped = useRef(false)
+  // 「迁移旧库」（v0.29.1）：手动把任意旧库并入中央库
+  const [migrateOpen, setMigrateOpen] = useState(false)
+  const [migratePath, setMigratePath] = useState('')
+  const [migrating, setMigrating] = useState(false)
+  const [migrateMsg, setMigrateMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  const doMigrate = useCallback(async (): Promise<void> => {
+    const p = migratePath.trim()
+    if (p.length === 0) {
+      setMigrateMsg({ kind: 'err', text: '请先填写旧库路径' })
+      return
+    }
+    setMigrating(true)
+    setMigrateMsg(null)
+    try {
+      const r = await viewerApi.migrateLegacy(p)
+      if (r.status === 'success') {
+        setMigrateMsg({
+          kind: 'ok',
+          text: `已并入 ${r.migrated} 条记忆${r.sessionsMoved > 0 ? ` + ${r.sessionsMoved} 个会话` : ''}${r.backup ? `；旧库备份 → ${r.backup}` : '；旧库未备份'}`,
+        })
+        setTick((t) => t + 1) // 迁移后立即刷新总览
+      } else if (r.status === 'no-old-db') {
+        setMigrateMsg({ kind: 'err', text: '未找到旧库：路径不存在，或不是 memory.db/库目录/项目根目录' })
+      } else {
+        setMigrateMsg({ kind: 'err', text: `旧库读取失败：${r.error ?? '未知错误'}` })
+      }
+    } catch (e) {
+      setMigrateMsg({ kind: 'err', text: e instanceof ViewerApiError ? e.message : String(e) })
+    } finally {
+      setMigrating(false)
+    }
+  }, [migratePath])
 
   const loadWorkspaces = useCallback(async (): Promise<WorkspaceSummary[]> => {
     const data = await viewerApi.workspaces()
@@ -205,7 +239,30 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
         : null,
       h('div', { className: 'mmv-spacer' }),
       h('span', { className: 'mmv-note' }, loading ? '加载中…' : `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`),
+      h('button', { className: 'mmv-btn', onClick: () => setMigrateOpen((v) => !v) }, '迁移旧库'),
       h('button', { className: 'mmv-btn', onClick: () => setTick((t) => t + 1) }, '刷新'),
+      migrateOpen
+        ? h(
+            'div',
+            { className: 'mmv-migrate' },
+            h('div', { className: 'mmv-migrate-row' },
+              h('input', {
+                className: 'mmv-input',
+                style: { minWidth: 420 },
+                placeholder: '旧库路径：memory.db 文件 / 库目录 / 项目根目录（如 /path/to/proj）',
+                value: migratePath,
+                onChange: (e: { target: { value: string } }) => setMigratePath(e.target.value),
+                onKeyDown: (e: { key: string }) => {
+                  if (e.key === 'Enter') void doMigrate()
+                },
+              }),
+              h('button', { className: 'mmv-btn', disabled: migrating, onClick: () => void doMigrate() }, migrating ? '迁移中…' : '开始迁移'),
+            ),
+            migrateMsg !== null
+              ? h('div', { className: migrateMsg.kind === 'ok' ? 'mmv-migrate-ok' : 'mmv-migrate-err' }, migrateMsg.text)
+              : h('div', { className: 'mmv-migrate-hint' }, '把旧版 .dsh-meow/memory.db（或整个项目目录）并入中央库；迁完自动备份为 .old，可随时再并。'),
+          )
+        : null,
     ),
     h('div', { className: 'mmv-body' }, body),
   )

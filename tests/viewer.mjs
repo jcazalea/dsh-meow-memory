@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
   MemoryDb,
   createViewerApi,
@@ -108,12 +109,24 @@ function fakeRes() {
     },
   }
 }
-async function call(path, { method = 'GET', headers = {} } = {}) {
-  return callWith(api, path, { method, headers })
+async function call(path, { method = 'GET', headers = {}, body } = {}) {
+  return callWith(api, path, { method, headers, body })
 }
-async function callWith(target, path, { method = 'GET', headers = {} } = {}) {
+async function callWith(target, path, { method = 'GET', headers = {}, body } = {}) {
   const { res, state } = fakeRes()
-  target.handler({ method, url: path, headers }, res)
+  // POST body：用事件流模拟 req（readJsonBody 依赖 data/end）。
+  const payload = body === undefined ? null : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))
+  const req = {
+    method,
+    url: path,
+    headers,
+    on(event, cb) {
+      if (event === 'data' && payload !== null) cb(payload)
+      else if (event === 'end') cb()
+      return req
+    },
+  }
+  target.handler(req, res)
   const deadline = Date.now() + 2000
   while (!state.ended && Date.now() < deadline) await new Promise((r) => setTimeout(r, 2))
   if (!state.ended) check(`响应超时（未 end）：${path}`, false)
@@ -271,13 +284,63 @@ console.log('— ETag / 304 —')
   check('ETag 不命中 → 200', r3.status === 200)
 }
 
+console.log('— 手动迁移旧库（POST /migrate-old） —')
+{
+  // 造一个"旧工作区"：项目根 + .dsh-meow/memory.db（v0.28 结构：soul/user 无 project 列）+ sessions
+  const legacyWs = join(root, 'legacy')
+  const legacyDbDir = join(legacyWs, DIR)
+  mkdirSync(join(legacyDbDir, 'sessions'), { recursive: true })
+  const oldDb = new DatabaseSync(join(legacyDbDir, 'memory.db'))
+  const COMMON = "id TEXT PRIMARY KEY, title TEXT, content TEXT NOT NULL, importance INTEGER NOT NULL DEFAULT 1, keywords TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active', source_session TEXT, hit_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_accessed_at INTEGER"
+  oldDb.exec(`CREATE TABLE user (${COMMON})`) // 无 project 列 = 早期 schema
+  oldDb.exec(`CREATE TABLE project (${COMMON}, project TEXT NOT NULL, subcategory TEXT)`)
+  oldDb.prepare(`INSERT INTO user (id, content, created_at, updated_at) VALUES (?, ?, 1, 1)`).run('lg-user-0001', '旧用户偏好：用中文')
+  oldDb.prepare(`INSERT INTO project (id, content, project, subcategory, created_at, updated_at) VALUES (?, ?, 'legacy-proj', 'overview', 1, 1)`).run('lg-proj-0001', '旧项目说明')
+  oldDb.close()
+  writeFileSync(join(legacyDbDir, 'sessions', 'session-legacy.json'), JSON.stringify({ injected: [] }), 'utf8')
+
+  const r = await call('/meow-memory/api/migrate-old', { method: 'POST', body: { path: legacyWs } })
+  check('迁移成功（status=success）', r.status === 200 && r.json?.data?.status === 'success', JSON.stringify(r.json))
+  check('迁移 2 条记忆', r.json.data.migrated === 2, String(r.json.data.migrated))
+  check('sessions 搬移 1 个', r.json.data.sessionsMoved === 1, String(r.json.data.sessionsMoved))
+  check('旧库已备份 .old', existsSync(join(legacyDbDir, 'memory.db.old')))
+  check('备份路径回传', typeof r.json.data.backup === 'string' && r.json.data.backup.endsWith('.old'), String(r.json.data.backup))
+  check('dbPath 回传', r.json.data.dbPath === join(legacyDbDir, 'memory.db'), String(r.json.data.dbPath))
+  const db = new MemoryDb(getCentralDbPath(centralDir))
+  const legUser = db.list('user').find((m) => m.content.includes('旧用户偏好'))
+  check('旧 user 并入且归属=legacy-proj（单项目推断）', legUser !== undefined && legUser.project === 'legacy-proj')
+  const legProj = db.list('project').find((m) => m.content.includes('旧项目说明'))
+  check('旧 project 并入且 id 规范化为标准格式', legProj !== undefined && legProj.project === 'legacy-proj' && /^[0-9a-z]{9}-/.test(legProj.id), String(legProj?.id))
+  db.close()
+  // 支持直接传 memory.db 文件
+  const legacyFile = join(root, 'legacy2')
+  const legacyFileDb = join(legacyFile, 'memory.db')
+  mkdirSync(legacyFile, { recursive: true })
+  const fdb = new DatabaseSync(legacyFileDb)
+  fdb.exec(`CREATE TABLE fact (${COMMON}, project TEXT)`)
+  fdb.prepare(`INSERT INTO fact (id, content, project, created_at, updated_at) VALUES (?, '文件直迁事实', 'x', 1, 1)`).run('lg-fact-0001')
+  fdb.close()
+  const rF = await call('/meow-memory/api/migrate-old', { method: 'POST', body: { path: legacyFileDb } })
+  check('直接传 memory.db 文件可迁', rF.json?.data?.status === 'success' && rF.json.data.migrated === 1, JSON.stringify(rF.json?.data))
+  // 边界
+  const r2 = await call('/meow-memory/api/migrate-old', { method: 'POST', body: {} })
+  check('缺 path → 400', r2.status === 400)
+  const r3 = await call('/meow-memory/api/migrate-old', { method: 'POST', body: { path: join(root, 'nope') } })
+  check('路径不存在 → no-old-db', r3.status === 200 && r3.json.data.status === 'no-old-db')
+  const r4 = await call('/meow-memory/api/migrate-old')
+  check('GET /migrate-old → 405', r4.status === 405 && r4.json?.error?.code === 'method-not-allowed', String(r4.status))
+  // 迁移后 memory.db 已不在 → 再并一次 = no-old-db（不重复）
+  const r5 = await call('/meow-memory/api/migrate-old', { method: 'POST', body: { path: legacyWs } })
+  check('重复迁移 → no-old-db（原库已备份）', r5.json.data.status === 'no-old-db')
+}
+
 console.log('— 纯计算层直调（不走 HTTP） —')
 {
   const repo = new ViewerRepository(centralDir)
   const allowed = repo.allowed(ctx, [wsB])
   check('仓储白名单 3 个工作区', allowed.length === 3)
   const reader = repo.reader({ path: wsA, title: 'alpha', fromRegistry: true })
-  check('只读 reader 可读（中央库）', reader !== undefined && reader.counts().fact === 2)
+  check('只读 reader 可读（中央库）', reader !== undefined && reader.counts().fact >= 2, String(reader?.counts().fact))
   check('revision 稳定', reader.revision() === reader.revision())
   const rows = reader.listAll()
   const graph = buildGraph(

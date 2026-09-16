@@ -25,6 +25,11 @@ export const VIEWER_CSS = `
 .mmv-btn.on{border-color:var(--dsw-alias-label-secondary);color:var(--dsw-alias-label-primary)}
 .mmv-body{flex:1 1 auto;min-height:0;overflow:auto;padding:16px 20px 24px}
 .mmv-note{font-size:11.5px;color:var(--dsw-alias-label-caption)}
+.mmv-migrate{display:flex;flex-direction:column;gap:6px;flex-basis:100%;padding:8px 10px;border:1px dashed var(--dsw-alias-border-l3);border-radius:9px}
+.mmv-migrate-row{display:flex;gap:8px;align-items:center}
+.mmv-migrate-hint{font-size:11.5px;color:var(--dsw-alias-label-caption)}
+.mmv-migrate-ok{font-size:12px;color:var(--dsw-success-500,#2da44e)}
+.mmv-migrate-err{font-size:12px;color:var(--dsw-danger-500,#cf222e)}
 .mmv-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
 .mmv-kpi{background:color-mix(in srgb,currentColor 4%,transparent);border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:10px 12px}
 .mmv-kpi span{font-size:11.5px;color:var(--dsw-alias-label-caption)}

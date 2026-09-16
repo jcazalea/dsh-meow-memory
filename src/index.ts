@@ -25,12 +25,11 @@ import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { closeAllDbs, getCentralDbPath, getDb } from './db.js'
 import { parseModelSpec, REFLECT_DELEGATE_MARKER, REFLECT_DONE_DELEGATE_MARKER, DREAM_DELEGATE_MARKER, type AgentOptionsSpec } from './delegate.js'
 import { CONFIG_DEFAULTS } from './defaults.js'
 import { ensureV0SessionsMigrated } from './migrate-v0.js'
-import { isCentralMigrated, migrateToCentral } from './migrate-central.js'
 
 import {
   abortDream,
@@ -568,33 +567,9 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   loadWindowIndex(resolved.projectDir) // 恢复窗口索引（热重载/重启后旧窗口不失联）
   resetSessionMemoryCache() // 会话记忆开关缓存以 DB 为准（热重载/重启后重建）
 
-  // v3 中央存储一次性迁移：首次启动把各工作区旧库（<ws>/.dsh-meow/memory.db）合并进
-  // ~/.dsh-meow/memory.db。已知工作区 = window-index 恢复的窗口 ∪ workspaceRegistry。
-  // 幂等（dream_meta migrated_v3）；失败不阻断启动。
-  try {
-    const known = new Set<string>()
-    for (const [, w] of windowIndex) {
-      if (typeof w === 'string' && w.length > 0) known.add(w)
-    }
-    const reg = (ctx as { get?: (name: string) => unknown }).get?.('workspaceRegistry') as
-      | { list?: () => ReadonlyArray<{ path?: unknown }> }
-      | undefined
-    try {
-      for (const w of reg?.list?.() ?? []) {
-        if (typeof w?.path === 'string' && w.path.length > 0) known.add(w.path)
-      }
-    } catch {
-      /* registry 不可用：只用 windowIndex */
-    }
-    if (!isCentralMigrated(resolved.projectDir)) {
-      // srcDir：旧库所在的"工作区子目录"= projectDir（相对时）；配置了绝对路径则回退默认。
-      const srcDir = isAbsolute(resolved.projectDir) ? '.dsh-meow' : resolved.projectDir
-      const migrated = migrateToCentral([...known], resolved.projectDir, srcDir)
-      if (migrated > 0) ctx.logger.info(`meow-memory: 中央库迁移完成，合并 ${migrated} 条记忆/会话记录到 ~/.dsh-meow/memory.db`)
-    }
-  } catch (e) {
-    ctx.logger.warn(`meow-memory: 中央库迁移失败（不阻断启动）: ${e instanceof Error ? e.message : String(e)}`)
-  }
+  // v0.29.1：启动自动迁移已移除——旧库合并改由查看器面板「迁移旧库」手动触发
+  // （POST /meow-memory/api/migrate-old → migrateLegacyPath）。历史数据不会自动并入中央库，
+  // 避免"旧库已被改名 .old 导致静默漏迁"的坑（2026-09-16 实测事故）。
   perf(`window-index restored ${windowIndex.size} windows`)
 
   // v0 会话一次性迁移（issue #13）：标记未迁移时体检全部会话并把 source.memory 搬进
@@ -1374,7 +1349,7 @@ export { collectDreamStates, headerOf, type PersistedSessionLike } from './dream
 export { isSessionMemoryEnabled, setSessionMemoryEnabled, resetSessionMemoryCache } from './session-state.js'
 export { MemoryDb, memoryDbPath, getDb, closeAllDbs, LEVELS, newId, PROJECT_SUBCATEGORIES, projectList, projectCovers, projectLabel, relativeTime, isGlobalProject, globalProjectMarker, GLOBAL_PROJECT_CANON, getCentralDbPath, getCentralSessionsDir } from './db.js'
 export { migrateLegacy } from './migrate.js'
-export { isCentralMigrated, migrateToCentral } from './migrate-central.js'
+export { isCentralMigrated, migrateToCentral, migrateLegacyPath, resolveLegacyDb, type LegacyMigrateResult } from './migrate-central.js'
 export { buildHitInjection, buildInjection, buildReinjection, buildProjectSectionText, readSeen, markSearched, markAccessed, readInjected, markInjected, markProjectQueried, readProjectQueried, markWritten, readWritten, markReinjectPending, clearReinjectPending, isReinjectPending, MAX_REINJECT_PROJECTS, MAX_REINJECT_WRITTEN, sessionsFile, getCurrentProject, setCurrentProject, releaseSeen } from './inject.js'
 export { buildReflectMessage, consecutiveToolSteps, scanTurn } from './reflect.js'
 export { tokenize, stemEn, search, findSimilar, topicDrift, recencyWeight } from './bm25.js'

@@ -58,6 +58,37 @@ async function get<T>(path: string, params?: Params, signal?: AbortSignal): Prom
   return body.data
 }
 
+async function post<T>(path: string, payload: unknown): Promise<T> {
+  let res: Response
+  try {
+    res = await fetch(url(path), {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch {
+    throw new ViewerApiError('network', '无法连接宿主（记忆查看器数据面未就绪？）')
+  }
+  let body: ApiResponse<T>
+  try {
+    body = (await res.json()) as ApiResponse<T>
+  } catch {
+    throw new ViewerApiError('bad-response', `宿主返回了非 JSON 响应（HTTP ${res.status}）`)
+  }
+  if (body.ok !== true) throw new ViewerApiError(body.error.code, body.error.message)
+  return body.data
+}
+
+/** POST /migrate-old 的返回体（面板「迁移旧库」）。 */
+export interface LegacyMigrateDto {
+  migrated: number
+  sessionsMoved: number
+  dbPath: string | null
+  backup: string | null
+  status: 'success' | 'no-old-db' | 'read-error'
+  error?: string
+}
+
 export interface ContextDto {
   sessionId: string
   workspace: string
@@ -101,4 +132,6 @@ export const viewerApi = {
     params: { scope: 'all' | 'workspace' | 'project'; workspace?: string; project?: string; level?: string; edges?: string; threshold?: number; topK?: number; limit?: number },
     signal?: AbortSignal,
   ) => get<GraphDto>('/graph', params, signal),
+  /** 面板「迁移旧库」：手动把任意旧库（memory.db/库目录/项目根）并入中央库。 */
+  migrateLegacy: (path: string) => post<LegacyMigrateDto>('/migrate-old', { path }),
 }

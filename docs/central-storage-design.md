@@ -38,7 +38,7 @@
 
 1. **单一数据库**：所有项目记忆存一个 SQLite 库。
 2. **跨设备友好**：复制 `~/.dsh-meow/memory.db`（+`sessions/`）一个文件即完成搬家。
-3. **平滑迁移**：首次启动自动合并，用户零操作；旧库留 `.old` 备份可回退。
+3. **手动迁移**（v0.29.1 起）：不再自动合并——查看器面板「迁移旧库」手动选库并入；旧库留 `.old` 备份可回退（避免自动迁移在旧库已改名时静默漏迁）。
 4. **七层按项目隔离**：soul/user 也获得 project 归属，注入不再全量串项目。
 5. **不动检索语义**：现有按 project 过滤的命中/工具层行为保持不变。
 
@@ -74,7 +74,7 @@
 
 ## 5. 迁移策略（新增 migrate-central.ts，~200 行）
 
-**触发**：插件启动时（loadWindowIndex 后）检测中央库 `dream_meta.migrated_v3` 标记未置位 → 扫描已知工作区（window-index.json ∪ workspaceRegistry）逐库合并。幂等门用 `getMeta('migrated_v3')`（**不用文件存在性判断**：getDb 建库副作用会先于迁移创建空中央库，同进程连接可读回自身写入）。
+**触发**：v0.29.0 曾为插件启动时自动合并（window-index.json ∪ workspaceRegistry 扫描，幂等门 `getMeta('migrated_v3')`）；**v0.29.1 起移除自动触发**——改为查看器面板「迁移旧库」手动选库（POST `/meow-memory/api/migrate-old` → `migrateLegacyPath`），也可用脚本 `scripts/migrate-central.py`。`migrateToCentral`/`migrateLegacyPath` 保留导出供测试/脚本调用；`migrateLegacyPath` 不受幂等门限制（用户显式选库，INSERT OR REPLACE 幂等可随时再并）。
 
 **合并规则**：
 | 数据 | 处理 |
@@ -101,12 +101,12 @@
 | 模块 | 改动 | 量级 |
 |------|------|------|
 | `db.ts` | getDb 指向中央库 + 缓存键改文件路径 + soul/user 加 project 列 + getCentralDbPath/getCentralSessionsDir/getMeta/rawAll/rawExec | ~80 行 |
-| 新增 `migrate-central.ts` | 合并/归属推断/备份/幂等门 | ~230 行 |
+| 新增 `migrate-central.ts` | 合并/归属推断/备份/幂等门 + `migrateLegacyPath`（面板手动迁移入口，支持文件/库目录/项目根，.old 冲突避让） | ~340 行 |
 | `inject.ts` | sessionsFile 移到中央目录 + soul/user 注入按 projectInScope 过滤 | ~50 行 |
 | `dream-signal.ts` | collectDreamStates 直接读中央库 windows | ~30 行 |
-| `index.ts` | 启动触发迁移（windowIndex ∪ registry，非致命）+ skip-dreams 走中央库 | ~30 行 |
+| `index.ts` | ~~启动自动迁移~~（v0.29.1 移除）+ skip-dreams 走中央库 + re-export migrateLegacyPath | ~5 行 |
 | `viewer` | repository 读中央库 + 白名单保留 + aggregate 按 reader 去重 | ~60 行（后端已完成） |
-| **前端 `client-viewer`** | 三层视图 workspace→project 维度 | ~120 行（待做） |
+| **前端 `client-viewer`** | 三层视图 workspace→project 维度 + 面板「迁移旧库」输入/按钮/结果 | ~150 行（已完成） |
 | **合计** | | **~600 行** |
 
 > 命中/工具层（tools.ts、hitQuery/buildInjection/memory_project）：**零改动**，已按 project 语义工作。
@@ -136,7 +136,7 @@
 ## 9. 测试用例
 
 1. 新安装（无旧数据）直接使用中央库。
-2. 从旧架构自动迁移（多工作区；soul/user 归属推断——单项目库打标、多项目库全局）。
+2. 手动迁移（POST /migrate-old）：文件/库目录/项目根三种路径、soul/user 归属推断（单项目库打标、多项目库全局）、.old 备份、缺 path 400、GET 405、重复迁移 no-old-db。
 3. 迁移后旧库 `.old` 保留，可手动回退。
 4. 多工作区并发读写同一中央库（实测锁竞争）。
 5. 注入语义：项目特定 user 只在锚定该项目时注入，全局 user 始终注入。

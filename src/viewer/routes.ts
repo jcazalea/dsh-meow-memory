@@ -16,6 +16,7 @@ import { findSimilar } from '../bm25.js'
 import { buildOverview, projectSummaries, queryMemories, unlabeledCounts } from './aggregate.js'
 import { etagOf, metaOf, readJsonBody, writeError, writeOk } from './http.js'
 import { ViewerRepository, type AllowedWorkspace } from './repository.js'
+import { migrateLegacyPath } from '../migrate-central.js'
 import { getCentralSessionsDir } from '../db.js'
 import type { DreamsDto, GraphEdgeType, MemoriesDto, MemoryDto, OverviewDto, ProjectsDto, SessionsDto, ViewerLevel } from './types.js'
 import { VIEWER_LEVELS } from './types.js'
@@ -106,7 +107,27 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
       writeError(res, status, code, message, missingWorkspaceMeta(partial))
 
     try {
+      // 只读端点仅 GET/HEAD；唯一写端点 /migrate-old 仅 POST（面板「迁移旧库」手动触发）。
+      if (path === '/migrate-old' && method !== 'POST') {
+        return fail(405, 'method-not-allowed', '迁移端点仅支持 POST')
+      }
       if (method !== 'GET' && method !== 'HEAD') {
+        if (path === '/migrate-old') {
+          let body: { path?: unknown } = {}
+          try {
+            body = (await readJsonBody(req)) as { path?: unknown }
+          } catch {
+            return fail(400, 'bad-request', '请求体必须是 JSON')
+          }
+          const p = typeof body?.path === 'string' ? body.path.trim() : ''
+          if (p === '') return fail(400, 'bad-request', 'path 必填：旧库文件夹或 memory.db 文件路径')
+          try {
+            const result = migrateLegacyPath(deps.dir, p)
+            return writeOk(res, result, metaOf(`migrate-${Date.now()}-${p.length}`), req)
+          } catch (e) {
+            return fail(500, 'internal-error', `迁移失败: ${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
         return fail(405, 'method-not-allowed', `不支持的请求方法：${method}`)
       }
 

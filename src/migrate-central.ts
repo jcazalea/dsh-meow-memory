@@ -2,8 +2,11 @@
  * meow-memory v3 中央存储 — 一次性迁移：把各工作区旧库（<ws>/.dsh-meow/memory.db）
  * 合并进 ~/.dsh-meow/memory.db（中央库）。
  *
- * 触发：插件启动时（index.ts）检测未迁移 → 传已知 workspace 列表调用 migrateToCentral。
- * 幂等：中央库 dream_meta 写 migrated_v3=1 后直接返回，不再扫描。
+ * 触发：启动自动迁移（v0.29）已于 v0.29.1 移除——改为查看器面板「迁移旧库」手动触发
+ * （viewer/routes.ts POST /migrate-old → migrateLegacyPath）；migrateToCentral 保留供
+ * 测试/脚本调用。
+ * 幂等：中央库 dream_meta 写 migrated_v3=1 后 migrateToCentral 直接返回（不再自动扫描）；
+ * migrateLegacyPath 不受幂等门限制（用户显式选库，随时可并）。
  *
  * 规则（用户拍板 2026-09-14）：
  * - soul/user 不合并去重；按来源库「project 层记忆的项目名集合」推断归属——集合恰好一个
@@ -16,8 +19,9 @@
  * 安全：逐个库迁、每库迁完才 rename 备份，中断可续跑（已迁的库不再被扫描）。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
+import os from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import {
   getCentralDbPath,
@@ -26,6 +30,7 @@ import {
   isGlobalProject,
   LEVELS,
   memoryDbPath,
+  newId,
   projectList,
   type Level,
   type MemoryRow,
@@ -96,12 +101,10 @@ function inferSoulUserProject(oldDb: DatabaseSync): string | null {
   return null
 }
 
-/** 迁移一个工作区的旧库 → 中央库。返回搬移的记忆条数；库不存在返回 0。 */
-function migrateOneWorkspace(central: ReturnType<typeof getDb>, ws: string, srcDir: string): number {
-  const oldPath = memoryDbPath(ws, srcDir)
-  if (!existsSync(oldPath)) return 0
+/** 把单个旧库文件（任意位置）的内容搬进中央库。返回搬移的记忆条数。 */
+function migrateDbFile(central: ReturnType<typeof getDb>, oldDbPath: string): number {
   // 可写打开 + checkpoint：把 WAL 合入主文件，随后 rename 主文件为 .old 才完整。
-  const oldDb = new DatabaseSync(oldPath)
+  const oldDb = new DatabaseSync(oldDbPath)
   let migrated = 0
   try {
     try {
@@ -120,6 +123,10 @@ function migrateOneWorkspace(central: ReturnType<typeof getDb>, ws: string, srcD
       for (const raw of rows) {
         const row = toMemoryRow(level, raw)
         if (level === 'soul' || level === 'user') row.project = suProject
+        // 非标准 id（旧 UUID）→ 写入前按 created_at 规范化（与 MemoryDb.upgrade 同规则）：
+        // 否则本次写入非标准 id、下次任意连接打开库时会被 upgrade 重写，造成同一库
+        // 两个连接读到的 id 不一致（2026-09-16 实测）。标准 id（9 位时间前缀）原样保留。
+        if (!/^[0-9a-z]{9}-/.test(row.id)) row.id = newId(row.created_at)
         central.insert(row)
         migrated++
       }
@@ -170,32 +177,49 @@ function migrateOneWorkspace(central: ReturnType<typeof getDb>, ws: string, srcD
   } finally {
     oldDb.close()
   }
-  // 迁移完成才重命名备份 + 清理 wal/shm（中断则旧库原样保留，可续跑）。
-  renameSync(oldPath, `${oldPath}.old`)
+  return migrated
+}
+
+/** 旧库迁移完成后的备份：rename 为 <db>.old；若已存在则避让为 <db>.old.<ts>（不覆盖旧备份）。 */
+function backupOldDb(oldDbPath: string): string | null {
+  let backup = `${oldDbPath}.old`
+  if (existsSync(backup)) backup = `${oldDbPath}.old.${Date.now()}`
+  try {
+    renameSync(oldDbPath, backup)
+  } catch {
+    return null
+  }
   for (const suffix of ['-wal', '-shm']) {
     try {
-      unlinkSync(`${oldPath}${suffix}`)
+      unlinkSync(`${oldDbPath}${suffix}`)
     } catch {
       /* 无残留 */
     }
   }
+  return backup
+}
+
+/** 迁移一个工作区的旧库 → 中央库。返回搬移的记忆条数；库不存在返回 0。 */
+function migrateOneWorkspace(central: ReturnType<typeof getDb>, ws: string, srcDir: string): number {
+  const oldPath = memoryDbPath(ws, srcDir)
+  if (!existsSync(oldPath)) return 0
+  const migrated = migrateDbFile(central, oldPath)
+  // 迁移完成才重命名备份 + 清理 wal/shm（中断则旧库原样保留，可续跑）。
+  backupOldDb(oldPath)
   return migrated
 }
 
-/** 迁移一个工作区的 sessions/<id>.json 到中央 sessions 目录（复制后删原件）。 */
-function migrateSessions(ws: string, srcDirName: string, dir: string): number {
-  const src = join(ws, srcDirName, 'sessions')
+/** 把 src 目录下 sessions/<id>.json 复制到中央 sessions 目录（复制后删原件）。 */
+function migrateSessionsFrom(src: string, dir: string): number {
   const dst = getCentralSessionsDir(dir)
   let n = 0
   try {
     mkdirSync(dst, { recursive: true })
     for (const f of readdirSync(src)) {
       if (!f.endsWith('.json')) continue
-      const srcFull = join(src, f)
-      const dstFull = join(dst, f)
       try {
-        copyFileSync(srcFull, dstFull)
-        unlinkSync(srcFull)
+        copyFileSync(join(src, f), join(dst, f))
+        unlinkSync(join(src, f))
         n++
       } catch {
         /* 单个文件失败跳过 */
@@ -205,6 +229,11 @@ function migrateSessions(ws: string, srcDirName: string, dir: string): number {
     /* 无 sessions 目录 */
   }
   return n
+}
+
+/** 迁移一个工作区的 sessions/<id>.json 到中央 sessions 目录（复制后删原件）。 */
+function migrateSessions(ws: string, srcDirName: string, dir: string): number {
+  return migrateSessionsFrom(join(ws, srcDirName, 'sessions'), dir)
 }
 
 /**
@@ -228,4 +257,88 @@ export function migrateToCentral(workspaces: readonly string[], dir = '.dsh-meow
   }
   central.setMeta(MIGRATED_KEY, 1)
   return total
+}
+
+/** 手动迁移旧库的结果（查看器面板 POST /migrate-old 返回体）。 */
+export interface LegacyMigrateResult {
+  /** 迁移进中央库的记忆条数（0 = 未迁到任何记忆）。 */
+  migrated: number
+  /** 迁移的会话文件数。 */
+  sessionsMoved: number
+  /** 解析到的旧库文件路径；无法解析为 null。 */
+  dbPath: string | null
+  /** 旧库备份路径（<db>.old 或 <db>.old.<ts>）；未 rename 时为 null。 */
+  backup: string | null
+  /** 失败/跳过原因（success = 成功）。 */
+  status: 'success' | 'no-old-db' | 'read-error'
+  /** 失败时的错误信息。 */
+  error?: string
+}
+
+/**
+ * 把用户给定的路径解析为旧库文件 + 同目录 sessions。
+ * 支持三种输入：memory.db 文件 / 含 memory.db 的目录 / 含 .dsh-meow/memory.db 的项目根。
+ * 相对路径相对 process.cwd()（dsh 启动目录）；~ 展开为 homedir。
+ */
+export function resolveLegacyDb(userPath: string): { db: string; sessions: string } | null {
+  let p = userPath.trim()
+  if (p.length === 0) return null
+  if (p === '~' || p.startsWith('~/')) p = join(os.homedir(), p.slice(1))
+  if (!isAbsolute(p)) p = join(process.cwd(), p)
+  let isFile = false
+  try {
+    isFile = statSync(p).isFile()
+  } catch {
+    return null // 路径不存在
+  }
+  let db: string
+  let sessions: string
+  if (isFile) {
+    if (!p.endsWith('.db')) return null
+    db = p
+    sessions = join(dirname(p), 'sessions')
+  } else {
+    const direct = join(p, 'memory.db')
+    const dsh = join(p, '.dsh-meow', 'memory.db')
+    if (existsSync(direct)) {
+      db = direct
+      sessions = join(p, 'sessions')
+    } else if (existsSync(dsh)) {
+      db = dsh
+      sessions = join(p, '.dsh-meow', 'sessions')
+    } else {
+      return null // 目录下没有旧库
+    }
+  }
+  return { db, sessions }
+}
+
+/**
+ * 手动迁移单个旧库（查看器面板入口）→ 中央库。不受 migrated_v3 幂等门限制：
+ * 用户显式选库，任何时刻都可并入（INSERT OR REPLACE 幂等，重复并安全）。
+ * @param dir 中央库目录（getCentralDbPath 语义：绝对直接用，相对为 homedir 子目录）。
+ * @param userPath 旧库位置：memory.db 文件 / 库目录 / 项目根目录。
+ */
+export function migrateLegacyPath(dir: string, userPath: string): LegacyMigrateResult {
+  const resolved = resolveLegacyDb(userPath)
+  if (resolved === null) {
+    return { migrated: 0, sessionsMoved: 0, dbPath: null, backup: null, status: 'no-old-db' }
+  }
+  const central = getDb('', dir)
+  let migrated = 0
+  try {
+    migrated = migrateDbFile(central, resolved.db)
+  } catch (e) {
+    return {
+      migrated: 0,
+      sessionsMoved: 0,
+      dbPath: resolved.db,
+      backup: null,
+      status: 'read-error',
+      error: e instanceof Error ? e.message : String(e),
+    }
+  }
+  const backup = backupOldDb(resolved.db)
+  const sessionsMoved = migrateSessionsFrom(resolved.sessions, dir)
+  return { migrated, sessionsMoved, dbPath: resolved.db, backup, status: 'success' }
 }

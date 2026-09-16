@@ -228,9 +228,14 @@ dsh plugin --profile web remove meow-memory
 | 会话已见痕迹（`sessions/<id>.json`） | `~/.dsh-meow/sessions/` |
 | 实例级运行态（窗口索引、prompt 覆盖、日志） | `~/.dsh-meow/` |
 
-首次升级到 v0.29.0 启动时自动执行**一次性迁移**：把各工作区旧的
-`.dsh-meow/memory.db` 合并进中央库（soul/user 按来源库的项目归属打标签或归全局），
-旧库改名 `memory.db.old` 保留备份；`sessions/` 复制进中央目录后删除原件。
+**迁移旧数据（v0.29.1 起手动触发）**：不再启动自动合并。两个入口：
+
+- **查看器面板**：记忆面板工具栏「迁移旧库」→ 填旧库路径（`memory.db` 文件 / 库目录 / 项目根目录）→ 开始迁移；
+- **命令行脚本**：`python3 scripts/migrate-central.py`（`--dry-run` 预览 / `--yes` 执行 / `--force` 重跑）。
+
+合并规则：soul/user 按来源库的项目归属打标签或归全局，其余层原样并入；
+旧库改名 `memory.db.old` 保留备份（`.old` 已存在时避让为 `.old.<时间戳>`）；
+`sessions/` 复制进中央目录后删除原件。
 
 **换电脑 / 备份**：拷贝 `~/.dsh-meow/memory.db` 和 `~/.dsh-meow/sessions/`
 这两个到新机器的相同位置即可（不是双向同步，是搬家式拷贝）。

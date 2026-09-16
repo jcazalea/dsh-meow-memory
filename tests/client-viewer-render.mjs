@@ -249,12 +249,16 @@ const API = {
 }
 let fetchCalls = []
 let inflight = 0
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init) => {
   const path = String(url).split('?')[0]
   fetchCalls.push(path)
   inflight++
   try {
     await new Promise((r) => setTimeout(r, 0))
+    if (init?.method === 'POST' && path === '/meow-memory/api/migrate-old') {
+      const ok = { ok: true, status: 200, json: async () => ({ ok: true, data: { migrated: 2, sessionsMoved: 1, dbPath: '/legacy/memory.db', backup: '/legacy/memory.db.old', status: 'success' }, meta: { generatedAt: Date.now(), etag: 'm', partial: [] } }) }
+      return ok
+    }
     const data = API[path]
     if (data === undefined) return { ok: false, status: 404, json: async () => ({ ok: false, error: { code: 'not-found', message: path }, meta: {} }) }
     return { ok: true, status: 200, json: async () => ({ ok: true, data, meta: { generatedAt: Date.now(), etag: 'e', partial: [] } }) }
@@ -345,6 +349,40 @@ console.log('— 面板（数据获取 + 切视图） —')
   check('切星图后拉 /graph', fetchCalls.includes('/meow-memory/api/graph'))
   check('切星图后渲染图例与统计', allText(starTree).includes('星座') && allText(starTree).includes('节点'))
   check('星图控件齐全（边开关 + 阈值）', allText(starTree).includes('结构边') && allText(starTree).includes('相似边') && allText(starTree).includes('阈值'))
+}
+
+console.log('— 面板「迁移旧库」 —')
+{
+  fetchCalls = []
+  const tree = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' })
+  const migrateBtn = findButton(tree, '迁移旧库')
+  check('工具栏有「迁移旧库」按钮', migrateBtn !== null)
+
+  // 点开 → 输入区展开（占位符提示三种输入形态）
+  migrateBtn.props.onClick()
+  const openTree = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' }, 8, lastInst)
+  const openText = allText(openTree)
+  check('展开后显示按钮与提示', openText.includes('开始迁移') && openText.includes('.old') && findAllByClass(openTree, 'mmv-input').some((el) => String(el.props.placeholder ?? '').includes('旧库路径')))
+
+  // 填路径 → 点「开始迁移」→ POST /migrate-old + 成功提示
+  const migrateInput = findAllByClass(openTree, 'mmv-input').find((el) => String(el.props.placeholder ?? '').includes('旧库路径'))
+  check('迁移输入框存在', migrateInput !== undefined)
+  migrateInput.props.onChange({ target: { value: '/legacy/proj' } })
+  const typedTree = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' }, 8, lastInst)
+  fetchCalls = []
+  findButton(typedTree, '开始迁移').props.onClick()
+  const doneTree = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' }, 8, lastInst)
+  check('提交后调用 POST /migrate-old', fetchCalls.includes('/meow-memory/api/migrate-old'))
+  const doneText = allText(doneTree)
+  check('成功提示含条数与备份路径', doneText.includes('已并入 2 条记忆') && doneText.includes('memory.db.old'))
+
+  // 空路径提交 → 本地校验错误
+  const tree2 = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' })
+  findButton(tree2, '迁移旧库').props.onClick()
+  const open2 = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' }, 8, lastInst)
+  findButton(open2, '开始迁移').props.onClick()
+  const errTree = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' }, 8, lastInst)
+  check('空路径本地拦截提示', allText(errTree).includes('请先填写旧库路径'))
 }
 
 console.log('— 工作区视图（列表 + 详情 + 相关记忆） —')
