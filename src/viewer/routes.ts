@@ -16,6 +16,7 @@ import { findSimilar } from '../bm25.js'
 import { buildOverview, projectSummaries, queryMemories, unlabeledCounts } from './aggregate.js'
 import { etagOf, metaOf, readJsonBody, writeError, writeOk } from './http.js'
 import { ViewerRepository, type AllowedWorkspace } from './repository.js'
+import { getCentralSessionsDir } from '../db.js'
 import type { DreamsDto, GraphEdgeType, MemoriesDto, MemoryDto, OverviewDto, ProjectsDto, SessionsDto, ViewerLevel } from './types.js'
 import { VIEWER_LEVELS } from './types.js'
 
@@ -47,10 +48,10 @@ function num(value: string | null, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
-/** 只读某会话的痕迹文件（/api/context 用）。 */
+/** 只读某会话的痕迹文件（/api/context 用；v3 中央存储：sessions 在中央目录）。 */
 function readSessionFootprint(dir: string, workspace: string, sessionId: string): SessionsDto['sessions'][number] | null {
   try {
-    const raw = JSON.parse(readFileSync(join(workspace, dir, 'sessions', `${sessionId}.json`), 'utf8')) as Record<string, unknown>
+    const raw = JSON.parse(readFileSync(join(getCentralSessionsDir(dir), `${sessionId}.json`), 'utf8')) as Record<string, unknown>
     const len = (v: unknown): number => (Array.isArray(v) ? v.length : 0)
     return {
       sessionId,
@@ -238,7 +239,7 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
           const reader = repo.reader(ws)
           if (reader === undefined) continue
           for (const e of reader.dreamLog(limit)) log.push(e)
-          for (const w of reader.windows(limit)) windows.push({ ...w, workspace: ws.path })
+          for (const w of reader.windows(limit)) windows.push(w) // windows 表自带真实 workspace（v3 保留）
           skipped.push(...reader.dreamSkips())
         }
         log.sort((a, b) => b.runAt - a.runAt)

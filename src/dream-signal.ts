@@ -15,7 +15,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync } from 'node:fs'
-import { getDb, memoryDbPath } from './db.js'
+import { getCentralDbPath, getDb } from './db.js'
 import { DREAM_LEASE_MS } from './dream.js'
 
 /** sessionPersistence.list() 元素的双版本形状（2026-09-10）：
@@ -44,8 +44,8 @@ export type DreamState = 'dreamed' | 'dreaming'
 
 /**
  * 收集全部会话的 dream 状态（全量快照用）。
- * 按 cwd 去重打开记忆库；某工作区没有记忆库（.dsh-meow/memory.db 不存在）直接跳过，
- * 绝不新建空库；单个工作区库损坏只跳过该工作区，不抛。
+ * v3 中央存储：所有窗口状态在 ~/.dsh-meow/memory.db（中央库）的 windows 表，
+ * 直接遍历即可，不再按 cwd 逐个打开工作区库；中央库未建返回空。
  * @param sessions - 全部会话（sessionPersistence.list() 结果；0.1.2- 扁平 / 0.1.3+ 快照两种形状都收）。
  * @param dir - 记忆库目录名（默认 .dsh-meow）。
  * @returns { dreamed, dreaming } 两个会话 id 数组（可能包含传入列表之外的 id——
@@ -54,25 +54,20 @@ export type DreamState = 'dreamed' | 'dreaming'
 export function collectDreamStates(sessions: ReadonlyArray<PersistedSessionLike>, dir = '.dsh-meow'): { dreamed: string[]; dreaming: string[] } {
   const dreamed: string[] = []
   const dreaming: string[] = []
-  const opened = new Set<string>()
-  for (const s of sessions) {
-    const { cwd } = headerOf(s)
-    if (typeof cwd !== 'string' || cwd.length === 0 || opened.has(cwd)) continue
-    opened.add(cwd)
-    if (!existsSync(memoryDbPath(cwd, dir))) continue
-    try {
-      const db = getDb(cwd, dir)
-      for (const w of db.listWindows()) {
-        const lease = db.getDreamLease(w.session_id)
-        if (lease !== null && Date.now() - lease.progress_at <= DREAM_LEASE_MS) {
-          dreaming.push(w.session_id) // 活跃租约：dream 进行中（优先于 dreamed）
-        } else if (w.last_dream_time !== null && (w.last_event_time ?? 0) <= w.last_dream_time) {
-          dreamed.push(w.session_id)
-        }
+  void sessions // 参数保留签名兼容（windowIndex 恢复后仍由调用方传入）
+  if (!existsSync(getCentralDbPath(dir))) return { dreamed, dreaming }
+  try {
+    const db = getDb('', dir)
+    for (const w of db.listWindows()) {
+      const lease = db.getDreamLease(w.session_id)
+      if (lease !== null && Date.now() - lease.progress_at <= DREAM_LEASE_MS) {
+        dreaming.push(w.session_id) // 活跃租约：dream 进行中（优先于 dreamed）
+      } else if (w.last_dream_time !== null && (w.last_event_time ?? 0) <= w.last_dream_time) {
+        dreamed.push(w.session_id)
       }
-    } catch {
-      // 单工作区记忆库损坏：跳过该工作区，不炸路由（图标功能静默降级）。
     }
+  } catch {
+    // 中央库损坏：跳过（图标功能静默降级）。
   }
   return { dreamed, dreaming }
 }

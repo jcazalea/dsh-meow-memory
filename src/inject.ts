@@ -13,7 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Doc } from './bm25.js'
 import { keywordHitScore, search, tokenize } from './bm25.js'
-import { isGlobalProject, memoryDbPath, projectCovers, projectLabel, relativeTime, PROJECT_SUBCATEGORIES, type MemoryDb, type MemoryRow, type ProjectSubcategory } from './db.js'
+import { isGlobalProject, getCentralDbPath, getCentralSessionsDir, projectCovers, projectLabel, relativeTime, PROJECT_SUBCATEGORIES, type MemoryDb, type MemoryRow, type ProjectSubcategory } from './db.js'
 import { fillTemplate, keyedValue } from './prompt-loader.js'
 
 export interface InjectOptions {
@@ -26,7 +26,9 @@ export interface InjectOptions {
 const DEFAULT_OPTS: InjectOptions = { hitTopK: 2, titleMax: 40 }
 
 export function sessionsFile(workspace: string, sessionId: string, dir = '.dsh-meow'): string {
-  return join(workspace, dir, 'sessions', `${sessionId}.json`)
+  // v3 中央存储：会话已见记账移到中央目录（按 sessionId 全局唯一，与项目解耦，
+  // 跨设备随 memory.db 一起搬家）。workspace 参数保留仅签名兼容。
+  return join(getCentralSessionsDir(dir), `${sessionId}.json`)
 }
 
 /** 会话记忆可见集：injected=注入过的，searched=search/find_similar 返回过的，
@@ -243,14 +245,21 @@ void shortTitle
  * 不含结束标记与「本轮用户prompt：」尾巴（两链路各自拼装），也不做已见记账（调用方负责）。
  * @returns null = 只有标题头，无任何可注入内容。
  */
+/** soul/user 注入范围（v3 中央存储拍板：全局 ∪ 当前锚定项目，与 hitQuery 同口径）：
+ *  project=null 或 '全局' 标记 = 通用信息跨项目注入；具体项目 = 只在该项目锚定时注入。 */
+function projectInScope(r: MemoryRow, currentProject: string | null): boolean {
+  return r.project === null || isGlobalProject(r.project) || (currentProject !== null && projectCovers(r.project, currentProject))
+}
+
 function buildInjectionBody(
   db: MemoryDb,
   o: InjectOptions,
+  currentProject: string | null,
 ): { body: string; injectedIds: string[] } | null {
   // 框架词外置（v0.19.0）：labels.md 的 inject.* 键；记忆条目正文本身是数据不是文案，不外置。
   const lbl = (key: string, params?: Record<string, string>): string => fillTemplate(keyedValue('labels', key), params)
-  const soul = db.list('soul', { status: 'active' })
-  const user = db.list('user', { status: 'active' })
+  const soul = db.list('soul', { status: 'active' }).filter((r) => projectInScope(r, currentProject))
+  const user = db.list('user', { status: 'active' }).filter((r) => projectInScope(r, currentProject))
 
   const lines: string[] = [lbl('inject.title'), '']
   const injected: string[] = []
@@ -309,7 +318,7 @@ export function buildInjection(
   dir = '.dsh-meow',
 ): { text: string; injectedIds: string[] } | null {
   const o = { ...DEFAULT_OPTS, ...opts }
-  const built = buildInjectionBody(db, o)
+  const built = buildInjectionBody(db, o, readSeenFile(workspace, sessionId, dir).currentProject)
   if (built === null) return null
   const text = built.body
   if (built.injectedIds.length > 0) markInjected(workspace, sessionId, built.injectedIds, dir)
@@ -398,7 +407,7 @@ function buildProjectSection(db: MemoryDb, workspace: string, project: string, d
     }
   }
   if (sections.length === 0) return null
-  const dbPath = memoryDbPath(workspace, dir)
+  const dbPath = getCentralDbPath(dir) // v3 中央存储：模型查库指中央库
   const text = [
     lbl('project.header', { name: project }),
     '',
@@ -479,7 +488,7 @@ export function buildReinjection(
   dir = '.dsh-meow',
 ): { text: string; injectedIds: string[] } | null {
   const o = { ...DEFAULT_OPTS, ...opts }
-  const snapshot = buildInjectionBody(db, o)
+  const snapshot = buildInjectionBody(db, o, readSeenFile(workspace, sessionId, dir).currentProject)
   const projectTexts: string[] = []
   const projectIds = new Set<string>()
   for (const project of projects) {

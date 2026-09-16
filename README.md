@@ -6,7 +6,8 @@
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）打造的跨会话记忆插件。
 
 
-**核心理念**：每个工作区维护一份结构化记忆数据库（`.dsh-meow/memory.db`，基于 `node:sqlite`）。
+**核心理念**：所有项目共享一份中央结构化记忆数据库（`~/.dsh-meow/memory.db`，基于 `node:sqlite`），
+按项目（project）名隔离记忆，换电脑只需拷贝这一个文件（连同 `~/.dsh-meow/sessions/`）。
 静态记忆手册（数据总览 + 工具用法 + 写作准则）以固定 section 的形式放在 **system prompt** 里——
 文本恒定，因此不会破坏 LLM provider 的 KV/上下文缓存。动态内容（soul/user 全量、设计原则、
 记忆导引）作为**第一条用户消息的前缀**注入，且首轮只注入长期记忆、不做关键词命中；
@@ -36,7 +37,7 @@
   该会话的当前项目；未锚定时命中只搜全局（用户闲聊不误伤）。
 - **缓存友好设计**：静态 `meow-memory:guide` section（order 130，紧随各 `tool:*` 说明之后）
   在 system prompt 中注册一次——文本恒定，KV 缓存友好。已见记忆（`injected` + `searched`）
-  按会话记录（`.dsh-meow/sessions/<id>.json`）：注入绝不重复；`memory_search` 前 5 条按相关度
+  按会话记录（`~/.dsh-meow/sessions/<id>.json`）：注入绝不重复；`memory_search` 前 5 条按相关度
   无脑取（不排除已见/本 session 建立的记忆），其余从排名后续绕开已见补齐；收到会话压缩
   信号（`compaction/*`）时释放已见记录，允许压缩后被再次命中提取。
 - **压缩后重注入**：会话被压缩（手动 `/compact` 或 token 压力自动触发）后，下一个用户
@@ -158,7 +159,7 @@ dsh plugin --profile web remove meow-memory
   name: 'meow-memory'
   config:
     enabled: true          # 总开关
-    projectDir: '.dsh-meow' # 记忆目录（相对工作区）
+    projectDir: '.dsh-meow' # 中央库目录（默认 ~/.dsh-meow/memory.db；填绝对路径则用该目录）
     promptLang: 'zh'       # ⚠️ 首次使用建议显式配置（见下方说明）
     hitTopK: 2             # 每条用户消息关键词命中的条目数上限（fact/lesson/rules/topic）
     reflect: true          # 连续 ≥reflectTurns 轮工具调用后自动反思
@@ -217,6 +218,23 @@ dsh plugin --profile web remove meow-memory
  首轮不做命中
 ```
 
+## 💾 数据位置与跨设备备份（v3 中央存储）
+
+自 v0.29.0 起，所有项目的记忆存在**一个中央库**：
+
+| 内容 | 位置 |
+| --- | --- |
+| 记忆库（七层 + windows/dream 等辅助表） | `~/.dsh-meow/memory.db` |
+| 会话已见痕迹（`sessions/<id>.json`） | `~/.dsh-meow/sessions/` |
+| 实例级运行态（窗口索引、prompt 覆盖、日志） | `~/.dsh-meow/` |
+
+首次升级到 v0.29.0 启动时自动执行**一次性迁移**：把各工作区旧的
+`.dsh-meow/memory.db` 合并进中央库（soul/user 按来源库的项目归属打标签或归全局），
+旧库改名 `memory.db.old` 保留备份；`sessions/` 复制进中央目录后删除原件。
+
+**换电脑 / 备份**：拷贝 `~/.dsh-meow/memory.db` 和 `~/.dsh-meow/sessions/`
+这两个到新机器的相同位置即可（不是双向同步，是搬家式拷贝）。
+
 ## 🔭 记忆查看器（v0.27.0）
 
 **入口**：左侧栏「全局面板」区多一个记忆图标（`sidebar.panellist`）——点它，中央区域切到记忆查看器（`main` 面板，key = `meow-memory`）。零 dsh 本体改动：两个 slot 都是官方扩展点，id/key 同名即自动配对。
@@ -257,7 +275,7 @@ GET /graph?scope=&workspace=&level=&edges=&threshold=&topK=&limit=   星图节�
 | --- | --- | --- |
 | 结构边 | `project`（含多值）、`source_session` 字段直出 | 确定 |
 | 相似边 | 关键词倒排取候选 + bigram 余弦，阈值 + 每节点 topK 剪枝 | 概率性（虚线绘制） |
-| 会话边 | `.dsh-meow/sessions/<id>.json` 的注入/检索/查阅/写过痕迹 | 确定（只覆盖痕迹文件还在的窗口） |
+| 会话边 | `~/.dsh-meow/sessions/<id>.json` 的注入/检索/查阅/写过痕迹 | 确定（只覆盖痕迹文件还在的窗口） |
 | 取代边 | 同 level + 高相似 + 一新一旧（旧条目已非 active） | 推断 |
 
 数据库里**没有**声明式的"记忆 A 引用记忆 B"字段（没有 `links`/`refs` 列），所以记忆之间的关系只能推断；要做真正的知识图谱，需要在 v2 给表层加 `links`。节点/边超上限时自动降采样并在 `stats.truncated` 标记，不静默丢数据。

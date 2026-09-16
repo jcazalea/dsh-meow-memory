@@ -15,7 +15,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fillTemplate, getPromptLang, keyedValue } from './prompt-loader.js'
 
@@ -163,8 +164,11 @@ const COMMON_COLS = `
 
 /** level → 建表语句（差异列按层特化）。表名来自 LEVELS 枚举，不拼外部输入。 */
 const SCHEMAS: Record<Level, string> = {
-  soul: `CREATE TABLE IF NOT EXISTS soul (${COMMON_COLS})`,
-  user: `CREATE TABLE IF NOT EXISTS user (${COMMON_COLS})`,
+  // soul/user 的 project 列（v3 中央存储拍板）：可空 = 全局（跨项目注入），非空 = 该项目特有。
+  soul: `CREATE TABLE IF NOT EXISTS soul (${COMMON_COLS},
+    project TEXT)`,
+  user: `CREATE TABLE IF NOT EXISTS user (${COMMON_COLS},
+    project TEXT)`,
   project: `CREATE TABLE IF NOT EXISTS project (${COMMON_COLS},
     project TEXT NOT NULL,
     subcategory TEXT)`,
@@ -250,6 +254,10 @@ export class MemoryDb {
       if (level === 'topic' && !cols.has('project')) {
         this.db.exec('ALTER TABLE topic ADD COLUMN project TEXT')
       }
+      // v3 中央存储：soul/user 补 project 列（可空=全局）。旧库无此列，ALTER 补上。
+      if ((level === 'soul' || level === 'user') && !cols.has('project')) {
+        this.db.exec(`ALTER TABLE ${level} ADD COLUMN project TEXT`)
+      }
       // 旧 UUID（不以 9 位时间前缀开头）→ 按 created_at 重写 id
       const legacy = this.db.prepare(`SELECT id FROM ${level}`).all() as Array<{ id: string }>
       for (const { id } of legacy) {
@@ -307,12 +315,12 @@ export class MemoryDb {
       .prepare(
         `INSERT INTO ${full.level} (id, title, content, importance, keywords, status, source_session, hit_count, created_at, updated_at, last_accessed_at
           ${full.level === 'project' ? ', project, subcategory' : ''}
-          ${full.level === 'fact' || full.level === 'lesson' || full.level === 'rules' ? ', project' : ''}
+          ${full.level === 'fact' || full.level === 'lesson' || full.level === 'rules' || full.level === 'soul' || full.level === 'user' ? ', project' : ''}
           ${full.level === 'lesson' ? ', corrected' : ''}
           ${full.level === 'topic' ? ', goal, project' : ''}
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           ${full.level === 'project' ? ', ?, ?' : ''}
-          ${full.level === 'fact' || full.level === 'lesson' || full.level === 'rules' ? ', ?' : ''}
+          ${full.level === 'fact' || full.level === 'lesson' || full.level === 'rules' || full.level === 'soul' || full.level === 'user' ? ', ?' : ''}
           ${full.level === 'lesson' ? ', ?' : ''}
           ${full.level === 'topic' ? ', ?, ?' : ''}
         )`,
@@ -330,7 +338,7 @@ export class MemoryDb {
         full.updated_at,
         full.last_accessed_at,
         ...(full.level === 'project' ? [full.project ?? '', full.subcategory] : []),
-        ...(full.level === 'fact' || full.level === 'lesson' || full.level === 'rules' ? [full.project] : []),
+        ...(full.level === 'fact' || full.level === 'lesson' || full.level === 'rules' || full.level === 'soul' || full.level === 'user' ? [full.project] : []),
         ...(full.level === 'lesson' ? [full.corrected] : []),
         ...(full.level === 'topic' ? [full.goal, full.project] : []),
       )
@@ -373,7 +381,7 @@ export class MemoryDb {
     if (patch.keywords !== undefined) push('keywords', JSON.stringify(patch.keywords))
     if (patch.status !== undefined) push('status', patch.status)
     if (patch.corrected !== undefined && level === 'lesson') push('corrected', patch.corrected)
-    if (patch.project !== undefined && (level === 'project' || level === 'fact' || level === 'lesson' || level === 'rules')) {
+    if (patch.project !== undefined && (level === 'project' || level === 'fact' || level === 'lesson' || level === 'rules' || level === 'soul' || level === 'user')) {
       push('project', patch.project)
     }
     if (patch.subcategory !== undefined && level === 'project') push('subcategory', patch.subcategory)
@@ -393,7 +401,7 @@ export class MemoryDb {
       where.push('status = ?')
       args.push(opts.status)
     }
-    if (opts.project !== undefined && (level === 'project' || level === 'fact' || level === 'lesson' || level === 'rules')) {
+    if (opts.project !== undefined && (level === 'project' || level === 'fact' || level === 'lesson' || level === 'rules' || level === 'soul' || level === 'user')) {
       where.push('project = ?')
       args.push(opts.project)
     }
@@ -432,11 +440,11 @@ export class MemoryDb {
     return row.n
   }
 
-  /** 全部出现过（含已过时）的项目名：project/fact/lesson/topic/rules 五表的 project 列并集
+  /** 全部出现过（含已过时）的项目名：七表（含 soul/user，v3 起有 project 列）的 project 列并集
    *  （多值逗号分隔展开；全局标记不是项目，projectList 已排除）。供记忆导引列出"用户的所有 project"。 */
   listProjectNames(): string[] {
     const names = new Set<string>()
-    for (const level of ['project', 'fact', 'lesson', 'topic', 'rules'] as const) {
+    for (const level of LEVELS) {
       const rows = this.db.prepare(`SELECT project FROM ${level} WHERE project IS NOT NULL AND project != ''`).all() as Array<{ project: string }>
       for (const r of rows) for (const n of projectList(r.project)) names.add(n)
     }
@@ -455,6 +463,26 @@ export class MemoryDb {
       .get() as { run_at: number } | undefined
     if (!row) return false
     return Date.now() - row.run_at < hours * 3600_000
+  }
+
+  getMeta(key: string): number | null {
+    const row = this.db.prepare(`SELECT value FROM dream_meta WHERE key = ?`).get(key) as { value: number } | undefined
+    return row?.value ?? null
+  }
+
+  setMeta(key: string, value: number): void {
+    this.db.prepare(`INSERT INTO dream_meta (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value)
+  }
+
+  /** 迁移/诊断专用：执行任意 SQL 取行。绝不用于热路径（绕过 type 约束）。 */
+  rawAll<T = Record<string, unknown>>(sql: string, ...args: unknown[]): T[] {
+    return this.db.prepare(sql).all(...(args as never[])) as T[]
+  }
+
+  /** 迁移/诊断专用：执行任意写 SQL。绝不用于热路径。 */
+  rawExec(sql: string, ...args: unknown[]): void {
+    this.db.prepare(sql).run(...(args as never[]))
   }
 
   close(): void {
@@ -702,17 +730,30 @@ export class MemoryDb {
   }
 }
 
-// ── 按工作区缓存（插件无全局 cwd；DB 按会话 cwd 懒打开） ─────────────────────
+// ── 中央库（v3 拍板：所有工作区共用 homedir 单库，跨设备复制一个文件即搬家） ──
+// 历史：v2 按工作区缓存（每个项目根 .dsh-meow/memory.db）；v3 起统一指向
+// ~/.dsh-meow/memory.db。workspace 参数保留仅作签名兼容（调用方零改动），
+// 实际路径与 workspace 无关——记忆隔离靠 project 名（逻辑），不靠物理路径。
+
+export function getCentralDbPath(dir = '.dsh-meow'): string {
+  // dir 为绝对路径 = 直接用该目录（测试/自定义中央目录）；否则 homedir 下的子目录。
+  return isAbsolute(dir) ? join(dir, 'memory.db') : join(homedir(), dir, 'memory.db')
+}
+
+/** 中央 sessions 目录（会话已见记账；与 getCentralDbPath 同语义：绝对 dir 直接用）。 */
+export function getCentralSessionsDir(dir = '.dsh-meow'): string {
+  return isAbsolute(dir) ? join(dir, 'sessions') : join(homedir(), dir, 'sessions')
+}
 
 const dbCache = new Map<string, MemoryDb>()
 
-/** 取工作区 DB（缓存复用）。workspace = 项目根（cwd）。 */
+/** 取中央 DB（缓存复用）。workspace 参数仅签名兼容（所有工作区共用同一库）。 */
 export function getDb(workspace: string, dir = '.dsh-meow'): MemoryDb {
-  const key = `${workspace}\u0000${dir}`
-  let db = dbCache.get(key)
+  const path = getCentralDbPath(dir)
+  let db = dbCache.get(path)
   if (!db) {
-    db = new MemoryDb(memoryDbPath(workspace, dir))
-    dbCache.set(key, db)
+    db = new MemoryDb(path)
+    dbCache.set(path, db)
   }
   return db
 }

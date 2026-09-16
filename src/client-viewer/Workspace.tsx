@@ -17,7 +17,7 @@ type StatusFilter = 'active' | 'all' | 'stale' | 'archived'
 
 const LEVELS = ['project', 'fact', 'lesson', 'topic', 'rules', 'soul', 'user'] as const
 
-export function WorkspaceView({ workspace, title }: { workspace: string; title?: string }): ReactNode {
+export function WorkspaceView({ workspace, title, initialProject = '' }: { workspace: string; title?: string; initialProject?: string | null }): ReactNode {
   const [tab, setTab] = useState<Tab>('list')
   const [projects, setProjects] = useState<ProjectsDto | null>(null)
   const [memories, setMemories] = useState<MemoryDto[]>([])
@@ -39,16 +39,16 @@ export function WorkspaceView({ workspace, title }: { workspace: string; title?:
     return () => window.clearTimeout(timer)
   }, [q])
 
-  // 切工作区：重置所有过滤与选择
+  // 切工作区/项目：重置所有过滤与选择，并应用选中项目
   useEffect(() => {
     setLevel(null)
-    setProject(null)
+    setProject(initialProject && initialProject.length > 0 ? initialProject : null)
     setStatus('active')
     setDays(null)
     setQ('')
     setSelected(null)
     setSimilar([])
-  }, [workspace])
+  }, [workspace, initialProject])
 
   useEffect(() => {
     let alive = true
@@ -166,7 +166,7 @@ export function WorkspaceView({ workspace, title }: { workspace: string; title?:
     h(
       'div',
       { className: 'mmv-pane mid' },
-      title !== undefined ? h('div', { className: 'mmv-note', style: { marginBottom: 8 } }, `工作区：${title} · ${workspace}`) : null,
+      title !== undefined ? h('div', { className: 'mmv-note', style: { marginBottom: 8 } }, `项目：${project ?? '全部'} · ${title}`) : null,
       error.length > 0 ? h('div', { className: 'mmv-error' }, error) : null,
       tab === 'list'
         ? h(

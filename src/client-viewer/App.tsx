@@ -8,11 +8,11 @@
  * 绝不抛到宿主渲染树。
  */
 
-import { createElement as h, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { MemoryDto, OverviewDto, WorkspaceSummary } from '../viewer/types.js'
+import type { MemoryDto, OverviewDto, ProjectSummary, WorkspaceSummary } from '../viewer/types.js'
 import { ViewerApiError, viewerApi } from './api.js'
-import { humanCount, levelColor, relativeTime, workspaceLabel } from './model.js'
+import { humanCount, levelColor, relativeTime } from './model.js'
 import { KpiCard, LevelBar, LevelBadge, MemoryRow, ensureViewerCss } from './ui.js'
 import { WorkspaceView } from './Workspace.js'
 import { StarMapView } from './StarMap.js'
@@ -36,7 +36,9 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
   }
   const [scope, setScope] = useState<Scope>('global')
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
-  const [wsPath, setWsPath] = useState<string>('')
+  const [wsPath, setWsPath] = useState<string>('') // 代表工作区（白名单内第一个有库的；读中央库）
+  const [projectSel, setProjectSel] = useState<string>('') // 选中项目（空 = 全部）
+  const [projSummaries, setProjSummaries] = useState<ProjectSummary[]>([])
   const [overview, setOverview] = useState<OverviewDto | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>('')
@@ -45,23 +47,13 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
   const [tick, setTick] = useState(0)
   const bootstrapped = useRef(false)
 
-  // 当前会话 → 工作区（找不到就退回列表第一个）
-  const currentSession = (() => {
-    try {
-      const v = props.useSessions?.((s) => (s as { current?: string } | undefined)?.current)
-      return typeof v === 'string' ? v : ''
-    } catch {
-      return ''
-    }
-  })()
-
   const loadWorkspaces = useCallback(async (): Promise<WorkspaceSummary[]> => {
     const data = await viewerApi.workspaces()
     setWorkspaces(data.workspaces)
     return data.workspaces
   }, [])
 
-  // 首次：拉工作区列表 + 用当前会话定位工作区
+  // 首次：拉工作区列表，选定代表工作区（白名单内第一个有库的），再拉项目清单
   useEffect(() => {
     if (bootstrapped.current) return
     bootstrapped.current = true
@@ -70,24 +62,23 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
       setError('')
       try {
         const list = await loadWorkspaces()
-        let preferred = ''
-        if (currentSession.length > 0) {
+        const rep = list.find((w) => w.hasDb)?.path ?? list[0]?.path ?? ''
+        setWsPath(rep)
+        if (rep.length > 0) {
           try {
-            const ctx = await viewerApi.context(currentSession)
-            preferred = ctx.workspace
+            const d = await viewerApi.projects(rep)
+            setProjSummaries(d.projects)
           } catch {
-            /* 会话不在本实例：忽略 */
+            /* 项目清单拿不到不影响后续 */
           }
         }
-        const fallback = list.find((w) => w.hasDb)?.path ?? list[0]?.path ?? ''
-        setWsPath(preferred.length > 0 && list.some((w) => w.path === preferred) ? preferred : fallback)
       } catch (e) {
         setError(e instanceof ViewerApiError ? e.message : String(e))
       } finally {
         setLoading(false)
       }
     })()
-  }, [currentSession, loadWorkspaces])
+  }, [loadWorkspaces])
 
   // 总览数据（全局视图 + 星图都用它做工作区清单）
   useEffect(() => {
@@ -101,6 +92,14 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
         setOverview(d)
         setWorkspaces(d.workspaces)
         setError('')
+        if (projSummaries.length === 0 && wsPath.length > 0) {
+          try {
+            const p = await viewerApi.projects(wsPath)
+            if (alive) setProjSummaries(p.projects)
+          } catch {
+            /* 项目清单拿不到不影响 */
+          }
+        }
       } catch (e) {
         if (alive) setError(e instanceof ViewerApiError ? e.message : String(e))
       } finally {
@@ -110,6 +109,7 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
     return () => {
       alive = false
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, tick])
 
   // 60s 自动刷新（与 dream 图标同一节奏；切走/卸载即停）
@@ -142,12 +142,10 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
     }
   }, [query])
 
-  const openWorkspace = useCallback((path: string) => {
-    setWsPath(path)
+  const openProject = useCallback((name: string) => {
+    setProjectSel(name)
     setScope('workspace')
   }, [])
-
-  const currentWs = workspaces.find((w) => w.path === wsPath)
 
   const body = ((): ReactNode => {
     if (error.length > 0 && overview === null && scope === 'global') {
@@ -155,13 +153,13 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
     }
     if (scope === 'global') {
       if (query.trim().length > 0) {
-        return h(SearchResults, { hits, onOpenWorkspace: openWorkspace })
+        return h(SearchResults, { hits, onOpenProject: openProject })
       }
-      return h(GlobalView, { overview, loading, onOpenWorkspace: openWorkspace, onOpenMemory: () => setScope('workspace') })
+      return h(GlobalView, { overview, projSummaries, loading, onOpenProject: openProject })
     }
     if (scope === 'workspace') {
-      if (wsPath === '') return h('div', { className: 'mmv-empty' }, loading ? '正在加载工作区…' : '没有可查看的工作区')
-      return h(WorkspaceView, { workspace: wsPath, title: currentWs === undefined ? undefined : workspaceLabel(currentWs) })
+      if (wsPath === '') return h('div', { className: 'mmv-empty' }, loading ? '正在加载…' : '没有可查看的记忆库')
+      return h(WorkspaceView, { workspace: wsPath, title: '中央记忆库', initialProject: projectSel })
     }
     return h(StarMapView, { workspaces, wsPath })
   })()
@@ -180,26 +178,27 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
           h(
             'button',
             { key: s, className: scope === s ? 'on' : '', onClick: () => setScope(s) },
-            s === 'global' ? '全局' : s === 'workspace' ? '工作区' : '星图',
+            s === 'global' ? '全局' : s === 'workspace' ? '项目' : '星图',
           ),
         ),
       ),
-      scope === 'workspace' || scope === 'starmap'
+      scope === 'workspace'
         ? h(
             'select',
             {
               className: 'mmv-input',
               style: { minWidth: 200 },
-              value: wsPath,
-              onChange: (e: { target: { value: string } }) => setWsPath(e.target.value),
+              value: projectSel,
+              onChange: (e: { target: { value: string } }) => setProjectSel(e.target.value),
             },
-            workspaces.map((w) => h('option', { key: w.path, value: w.path }, `${workspaceLabel(w)}${w.hasDb ? '' : '（无记忆库）'}`)),
+            h('option', { key: '', value: '' }, '全部项目'),
+            projSummaries.map((p) => h('option', { key: p.name, value: p.name }, p.name)),
           )
         : null,
       scope !== 'starmap'
         ? h('input', {
             className: 'mmv-input',
-            placeholder: scope === 'global' ? '跨工作区搜索记忆…' : '搜索本工作区…',
+            placeholder: scope === 'global' ? '搜索记忆…' : '搜索该项目…',
             value: query,
             onChange: (e: { target: { value: string } }) => setQuery(e.target.value),
           })
@@ -217,25 +216,26 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
 /** 全局视图（导出供测试直接渲染，不必经过面板的数据获取层）。 */
 export function GlobalView({
   overview,
+  projSummaries,
   loading,
-  onOpenWorkspace,
+  onOpenProject,
 }: {
   overview: OverviewDto | null
+  projSummaries: ProjectSummary[]
   loading: boolean
-  onOpenWorkspace: (path: string) => void
-  onOpenMemory: () => void
+  onOpenProject: (project: string) => void
 }): ReactNode {
-  if (overview === null) return h('div', { className: 'mmv-loading' }, loading ? '正在聚合各工作区记忆…' : '暂无数据')
-  const { kpi, byLevel, workspaces, recent, globalEntries, health, dreamLog } = overview
+  if (overview === null) return h('div', { className: 'mmv-loading' }, loading ? '正在聚合记忆…' : '暂无数据')
+  const { kpi, byLevel, recent, globalEntries, health, dreamLog } = overview
   return h(
     'div',
     null,
     h(
       'div',
       { className: 'mmv-kpis' },
-      h(KpiCard, { label: '工作区', value: String(kpi.workspaces), sub: `${kpi.withDb} 个有记忆库`, color: '#7aa2f7' }),
+      h(KpiCard, { label: '项目', value: String(kpi.projects), sub: '按 project 聚合', color: '#7aa2f7' }),
       h(KpiCard, { label: '记忆总数', value: humanCount(kpi.total), sub: `本周新增 ${kpi.newThisWeek}`, color: '#9ece6a' }),
-      h(KpiCard, { label: '项目', value: String(kpi.projects), sub: '跨工作区去重', color: '#bb9af7' }),
+      h(KpiCard, { label: '工作区', value: String(kpi.workspaces), sub: `${kpi.withDb} 个共享中央库`, color: '#bb9af7' }),
       h(KpiCard, { label: '待整理窗口', value: String(kpi.pendingDream), sub: '空闲且未 dream', color: '#e0af68' }),
       h(KpiCard, { label: '已完结/删除', value: `${kpi.stale} / ${kpi.archived}`, sub: 'stale / archived', color: '#565f89' }),
       h(KpiCard, { label: '层级分布', value: `P${byLevel.project} F${byLevel.fact}`, sub: `L${byLevel.lesson} T${byLevel.topic} R${byLevel.rules}` }),
@@ -246,20 +246,22 @@ export function GlobalView({
       h(
         'div',
         { className: 'mmv-col', style: { flex: '1 1 60%' } },
-        h('div', { className: 'mmv-sect' }, '工作区', h('em', null, `${workspaces.length} 个`)),
-        h(
-          'div',
-          { className: 'mmv-grid2' },
-          workspaces.map((w) => h(WorkspaceCard, { key: w.path, ws: w, onOpen: () => onOpenWorkspace(w.path) })),
-        ),
-        h('div', { className: 'mmv-sect', style: { marginTop: 16 } }, '健康检查', h('em', null, '点开即刻过滤到对应条目（在工作区视图里看）')),
+        h('div', { className: 'mmv-sect' }, '项目', h('em', null, `${projSummaries.length} 个`)),
+        projSummaries.length === 0
+          ? h('div', { className: 'mmv-empty' }, '还没有项目记忆')
+          : h(
+              'div',
+              { className: 'mmv-grid2' },
+              projSummaries.map((p) => h(ProjectCard, { key: p.name, p, onOpen: () => onOpenProject(p.name) })),
+            ),
+        h('div', { className: 'mmv-sect', style: { marginTop: 16 } }, '健康检查', h('em', null, '点开即刻过滤到对应条目（在项目视图里看）')),
         h(
           'div',
           { className: 'mmv-health' },
           health.map((item) =>
             h(
               'div',
-              { key: item.key, className: 'h', onClick: () => onOpenWorkspace(workspaces.find((w) => w.hasDb)?.path ?? '') },
+              { key: item.key, className: 'h', onClick: () => onOpenProject('') },
               h('i', { style: { background: healthColor(item.key) } }),
               healthLabel(item.key),
               h('b', { style: { color: healthColor(item.key) } }, String(item.count)),
@@ -270,17 +272,17 @@ export function GlobalView({
       h(
         'div',
         { className: 'mmv-col', style: { flex: '1 1 32%', minWidth: 280 } },
-        h('div', { className: 'mmv-sect' }, '跨库最近更新'),
+        h('div', { className: 'mmv-sect' }, '最近更新'),
         recent.length === 0
           ? h('div', { className: 'mmv-empty' }, '还没有记忆')
           : recent.slice(0, 12).map((e) =>
-              h(MemoryRow, { key: `${e.workspace}-${e.memory.id}`, memory: e.memory, showWorkspace: e.workspaceTitle, onClick: () => onOpenWorkspace(e.workspace) }),
+              h(MemoryRow, { key: `${e.workspace}-${e.memory.id}`, memory: e.memory, showWorkspace: e.workspaceTitle, onClick: () => onOpenProject(e.memory.project ?? '') }),
             ),
         h('div', { className: 'mmv-sect', style: { marginTop: 14 } }, '全局条目', h('em', null, 'project = 全局')),
         globalEntries.length === 0
           ? h('div', { className: 'mmv-note' }, '暂无标记为「全局」的条目')
           : globalEntries.slice(0, 8).map((e) =>
-              h(MemoryRow, { key: `${e.workspace}-${e.memory.id}`, memory: e.memory, showWorkspace: e.workspaceTitle, onClick: () => onOpenWorkspace(e.workspace) }),
+              h(MemoryRow, { key: `${e.workspace}-${e.memory.id}`, memory: e.memory, showWorkspace: e.workspaceTitle, onClick: () => onOpenProject(e.memory.project ?? '') }),
             ),
       ),
     ),
@@ -306,33 +308,31 @@ export function GlobalView({
   )
 }
 
-function WorkspaceCard({ ws, onOpen }: { ws: WorkspaceSummary; onOpen: () => void }): ReactNode {
-  const total = Object.values(ws.counts).reduce((a, b) => a + b, 0)
+function ProjectCard({ p, onOpen }: { p: ProjectSummary; onOpen: () => void }): ReactNode {
+  const total = p.total
+  const counts = p.counts
   return h(
     'div',
     { className: 'mmv-ws', onClick: onOpen },
     h(
       'div',
       { className: 't' },
-      h('b', null, workspaceLabel(ws)),
-      h('span', { style: { marginLeft: 'auto', color: '#e0af68', opacity: ws.dream.hasLease ? 1 : 0.55 } }, '●'),
+      h('b', null, p.name),
     ),
-    h('div', { className: 'p' }, ws.path),
-    h(LevelBar, { counts: ws.counts }),
-    h('div', { className: 'num' }, ws.hasDb ? humanCount(total) : '—', h('small', null, ' 条')),
-    h('div', { className: 'meta' }, ws.hasDb ? `项目 ${ws.projects.length} · 最近更新 ${relativeTime(ws.lastUpdatedAt)}` : '无记忆库（还没写过记忆）'),
-    ws.error !== undefined ? h('div', { className: 'mmv-note', style: { color: '#f7768e' } }, `读取失败：${ws.error}`) : null,
+    h('div', { className: 'p' }, 'project 维度'),
+    h(LevelBar, { counts }),
+    h('div', { className: 'num' }, humanCount(total), h('small', null, ' 条')),
     h(
       'div',
       { className: 'mmv-mini' },
       (['project', 'fact', 'lesson', 'topic', 'rules', 'soul', 'user'] as const)
-        .filter((l) => (ws.counts[l] ?? 0) > 0)
+        .filter((l) => (counts[l] ?? 0) > 0)
         .map((l) =>
           h(
             'span',
             { key: l },
             h('i', { style: { background: levelColor(l) } }),
-            `${l} ${ws.counts[l]}`,
+            `${l} ${counts[l]}`,
           ),
         ),
     ),
@@ -341,22 +341,22 @@ function WorkspaceCard({ ws, onOpen }: { ws: WorkspaceSummary; onOpen: () => voi
 
 function SearchResults({
   hits,
-  onOpenWorkspace,
+  onOpenProject,
 }: {
   hits: Array<{ workspace: string; workspaceTitle: string; memory: MemoryDto }>
-  onOpenWorkspace: (path: string) => void
+  onOpenProject: (project: string) => void
 }): ReactNode {
   if (hits.length === 0) return h('div', { className: 'mmv-empty' }, '没有匹配的记忆')
   return h(
     'div',
     null,
-    h('div', { className: 'mmv-sect' }, `跨工作区命中 ${hits.length} 条`),
+    h('div', { className: 'mmv-sect' }, `命中 ${hits.length} 条`),
     hits.map((hit) =>
       h(MemoryRow, {
         key: `${hit.workspace}-${hit.memory.id}`,
         memory: hit.memory,
         showWorkspace: hit.workspaceTitle,
-        onClick: () => onOpenWorkspace(hit.workspace),
+        onClick: () => onOpenProject(hit.memory.project ?? ''),
       }),
     ),
   )

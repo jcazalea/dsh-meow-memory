@@ -314,17 +314,18 @@ const starSrc = await load('src/client-viewer/StarMap.tsx')
 
 console.log('— 全局视图 —')
 {
-  const tree = await renderComponent(app.GlobalView, { overview: OVERVIEW, loading: false, onOpenWorkspace: () => {}, onOpenMemory: () => {} })
+  const PROJ = API['/meow-memory/api/projects'].projects
+  const tree = await renderComponent(app.GlobalView, { overview: OVERVIEW, projSummaries: PROJ, loading: false, onOpenProject: () => {} })
   const text = allText(tree)
-  check('渲染出 KPI 与数值', text.includes('工作区') && text.includes('记忆总数') && text.includes('3'))
-  check('渲染出两个工作区卡', findAllByClass(tree, 'mmv-ws').length === 2)
-  check('无记忆库的工作区标注', text.includes('无记忆库'))
+  check('渲染出 KPI 与数值', text.includes('项目') && text.includes('记忆总数') && text.includes('3'))
+  check('渲染出项目卡', findAllByClass(tree, 'mmv-ws').length === PROJ.length)
+  check('项目卡标注 project 维度', text.includes('project 维度'))
   check('渲染出跨库最近更新', text.includes(MEM.content.slice(0, 12)))
   check('渲染出全局条目与来源', text.includes('本机文件一律不删除') && text.includes('全局条目'))
   check('渲染出健康检查四项', text.includes('无关键词条目') && text.includes('未完成 todo') && text.includes('疑似重复'))
   check('健康检查数值', text.includes('staleRules') === false && text.includes('超期未更新准则'))
   check('渲染出整理留痕', text.includes('window dream done'))
-  check('空数据不炸', allText(await renderComponent(app.GlobalView, { overview: null, loading: true, onOpenWorkspace: () => {}, onOpenMemory: () => {} })).includes('正在聚合'))
+  check('空数据不炸', allText(await renderComponent(app.GlobalView, { overview: null, projSummaries: [], loading: true, onOpenProject: () => {} })).includes('正在聚合'))
 }
 
 console.log('— 面板（数据获取 + 切视图） —')
@@ -332,8 +333,8 @@ console.log('— 面板（数据获取 + 切视图） —')
   fetchCalls = []
   const tree = await renderComponent(app.MemoryViewerPanel, { useSessions: () => 'session-abc' })
   const text = allText(tree)
-  check('标题与三个 scope 按钮', text.includes('记忆') && findButton(tree, '全局') !== null && findButton(tree, '工作区') !== null && findButton(tree, '星图') !== null)
-  check('启动即拉 workspaces + context + overview', fetchCalls.includes('/meow-memory/api/workspaces') && fetchCalls.includes('/meow-memory/api/context') && fetchCalls.includes('/meow-memory/api/overview'))
+  check('标题与三个 scope 按钮', text.includes('记忆') && findButton(tree, '全局') !== null && findButton(tree, '项目') !== null && findButton(tree, '星图') !== null)
+  check('启动即拉 workspaces + projects + overview', fetchCalls.includes('/meow-memory/api/workspaces') && fetchCalls.includes('/meow-memory/api/projects') && fetchCalls.includes('/meow-memory/api/overview'))
   check('默认渲染全局视图内容', text.includes('记忆总数'))
 
   // 切到「星图」：应触发 /graph 并渲染星图 UI

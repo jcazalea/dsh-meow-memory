@@ -60,6 +60,8 @@ import {
   minutesInTimeZone,
   isDreamSuppressed,
   collectDreamStates,
+  migrateToCentral,
+  isCentralMigrated,
   sessionEventsOf,
   isSessionMemoryEnabled,
   setSessionMemoryEnabled,
@@ -231,7 +233,7 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
 {
   const cfgR = { enabled: true, idleMinutes: 180, checkMinutes: 15, suppressWindows: [], suppressLeadMinutes: 15, timeZone: 'Asia/Shanghai', rulesReviewDays: 2 }
   const wsR = mkdtempSync(join(tmpdir(), 'mm-resume-'))
-  const dbR = getDb(wsR, '.dsh-meow')
+  const dbR = getDb(wsR, wsR)
   const widR = 'win-resume-1'
   dbR.touchWindow(widR, wsR, Date.now() - 4 * 3600_000) // 空闲 4h，need=true
   dbR.insert({ level: 'fact', content: '恢复后要整理的记忆', project: 'dsh', source_session: widR, created_at: 100 })
@@ -240,20 +242,20 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
   // mock 对齐现行契约：resume 在 agents service 本体（service.resume(options)），
   // factory 槽是 { target } 包装、其上无 resume（src/dream.ts resumeAndDream 实证）。
   const ctxR = { get: (name) => (name === 'agents' ? { resume: async () => resumedAgent } : undefined) }
-  await resumeAndDream(ctxR, widR, wsR, '.dsh-meow', undefined, cfgR)
+  await resumeAndDream(ctxR, widR, wsR, wsR, undefined, cfgR)
   check('resume: agent restored → dream started (steered + lease)', steered.length === 1 && dbR.getDreamLease(widR) !== null)
 
   const wsR2 = mkdtempSync(join(tmpdir(), 'mm-resume-fail-'))
-  const dbR2 = getDb(wsR2, '.dsh-meow')
+  const dbR2 = getDb(wsR2, wsR2)
   const widR2 = 'win-resume-2'
   dbR2.touchWindow(widR2, wsR2, Date.now() - 4 * 3600_000)
   dbR2.insert({ level: 'fact', content: '恢复失败窗口的记忆', project: 'dsh', source_session: widR2, created_at: 100 })
   const ctxR2 = { get: (name) => (name === 'agents' ? { resume: async () => { throw new Error('session file gone') } } : undefined) }
-  await resumeAndDream(ctxR2, widR2, wsR2, '.dsh-meow', undefined, cfgR)
+  await resumeAndDream(ctxR2, widR2, wsR2, wsR2, undefined, cfgR)
   check('resume: failure degrades silently (no lease, no throw)', dbR2.getDreamLease(widR2) === null)
 
   const wsR3 = mkdtempSync(join(tmpdir(), 'mm-resume-dedup-'))
-  const dbR3 = getDb(wsR3, '.dsh-meow')
+  const dbR3 = getDb(wsR3, wsR3)
   const widR3 = 'win-resume-3'
   dbR3.touchWindow(widR3, wsR3, Date.now() - 4 * 3600_000)
   dbR3.insert({ level: 'fact', content: '防重入窗口的记忆', project: 'dsh', source_session: widR3, created_at: 100 })
@@ -261,23 +263,23 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
   let releaseResume
   const gate = new Promise((r) => { releaseResume = r })
   const ctxR3 = { get: (name) => (name === 'agents' ? { resume: async () => { resumeCalls++; await gate; return resumedAgent } } : undefined) }
-  const p1 = resumeAndDream(ctxR3, widR3, wsR3, '.dsh-meow', undefined, cfgR)
-  const p2 = resumeAndDream(ctxR3, widR3, wsR3, '.dsh-meow', undefined, cfgR)
+  const p1 = resumeAndDream(ctxR3, widR3, wsR3, wsR3, undefined, cfgR)
+  const p2 = resumeAndDream(ctxR3, widR3, wsR3, wsR3, undefined, cfgR)
   releaseResume()
   await Promise.all([p1, p2])
   check('resume: in-flight dedup (single resume call)', resumeCalls === 1)
 
   // not-found 退避（2026-09-05）：跨实例/已删除窗口的 resume 永久失败，6h 内不再重试
   const wsR4 = mkdtempSync(join(tmpdir(), 'mm-resume-backoff-'))
-  const dbR4 = getDb(wsR4, '.dsh-meow')
+  const dbR4 = getDb(wsR4, wsR4)
   const widR4 = 'win-resume-backoff-1'
   dbR4.touchWindow(widR4, wsR4, Date.now() - 4 * 3600_000)
   dbR4.insert({ level: 'fact', content: 'not-found 退避窗口的记忆', project: 'dsh', source_session: widR4, created_at: 100 })
   let resumeCalls4 = 0
   const ctxR4 = { get: (name) => (name === 'agents' ? { resume: async () => { resumeCalls4++; throw new Error('session "win-resume-backoff-1" not found') } } : undefined) }
-  await resumeAndDream(ctxR4, widR4, wsR4, '.dsh-meow', undefined, cfgR)
+  await resumeAndDream(ctxR4, widR4, wsR4, wsR4, undefined, cfgR)
   check('resume: not-found degrades silently (no lease)', dbR4.getDreamLease(widR4) === null && resumeCalls4 === 1)
-  await resumeAndDream(ctxR4, widR4, wsR4, '.dsh-meow', undefined, cfgR)
+  await resumeAndDream(ctxR4, widR4, wsR4, wsR4, undefined, cfgR)
   check('resume: not-found backed off (no retry within window)', resumeCalls4 === 1)
   dbR4.close()
   rmSync(wsR4, { recursive: true, force: true })
@@ -296,7 +298,7 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
 
   const cfgS = { enabled: true, idleMinutes: 180, checkMinutes: 15, suppressWindows: [], suppressLeadMinutes: 15, timeZone: 'Asia/Shanghai', rulesReviewDays: 2 }
   const wsS = mkdtempSync(join(tmpdir(), 'mm-subagent-'))
-  const dbS = getDb(wsS, '.dsh-meow')
+  const dbS = getDb(wsS, wsS)
   const widS = 'win-subagent-1'
   dbS.touchWindow(widS, wsS, Date.now() - 4 * 3600_000) // 空闲 4h，need=true
   dbS.insert({ level: 'fact', content: '子代理窗口的记忆', project: 'dsh', source_session: widS, created_at: 100 })
@@ -306,10 +308,10 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
   let getS = 0
   const ctxS = { get: (name) => (name === 'agents' ? { get: () => { getS++; return subAgent } } : undefined) }
   const winIndexS = new Map([[widS, wsS]])
-  dreamSweepOnce(ctxS, cfgS, '.dsh-meow', winIndexS)
+  dreamSweepOnce(ctxS, cfgS, wsS, winIndexS)
   check('sweep: subagent window not dreamed (no lease)', dbS.getDreamLease(widS) === null)
   // ② 缓存命中：第二轮不再取 agent（无 resume/无重复判定开销）
-  dreamSweepOnce(ctxS, cfgS, '.dsh-meow', winIndexS)
+  dreamSweepOnce(ctxS, cfgS, wsS, winIndexS)
   check('sweep: subagent cache hit (agent fetched only once)', getS === 1)
 
   // ③ resume 链：resume 成功但 header.origin=subagent → 不 start
@@ -317,7 +319,7 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
   dbS.touchWindow(widS2, wsS, Date.now() - 4 * 3600_000)
   dbS.insert({ level: 'fact', content: '子代理恢复窗口的记忆', project: 'dsh', source_session: widS2, created_at: 100 })
   const ctxS2 = { get: (name) => (name === 'agents' ? { resume: async () => ({ session: { header: { id: widS2, origin: 'subagent' } } }) } : undefined) }
-  await resumeAndDream(ctxS2, widS2, wsS, '.dsh-meow', undefined, cfgS)
+  await resumeAndDream(ctxS2, widS2, wsS, wsS, undefined, cfgS)
   check('resume: subagent restored but not dreamed (no lease)', dbS.getDreamLease(widS2) === null)
 
   // ③b resume 链：resume resolve 但 agent 无可用 header（真机实测=子代理会话的 resume
@@ -327,10 +329,10 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
   dbS.insert({ level: 'fact', content: '不可恢复句柄窗口的记忆', project: 'dsh', source_session: widS2b, created_at: 100 })
   let resumeCalls2b = 0
   const ctxS2b = { get: (name) => (name === 'agents' ? { resume: async () => { resumeCalls2b++; return undefined } } : undefined) }
-  await resumeAndDream(ctxS2b, widS2b, wsS, '.dsh-meow', undefined, cfgS)
+  await resumeAndDream(ctxS2b, widS2b, wsS, wsS, undefined, cfgS)
   check('resume: unusable agent not dreamed (no lease)', dbS.getDreamLease(widS2b) === null)
   const winIndexS2b = new Map([[widS2b, wsS]])
-  dreamSweepOnce(ctxS, cfgS, '.dsh-meow', winIndexS2b)
+  dreamSweepOnce(ctxS, cfgS, wsS, winIndexS2b)
   check('resume: unusable agent cached (sweep skips without resume)', resumeCalls2b === 1)
 
   // ④ 主窗口不受影响：同库主窗口 agent（无 origin）正常 start
@@ -338,13 +340,13 @@ check('check gate passes after interval', dbW.claimCheckGate(0) === true)
   dbS.touchWindow(widS3, wsS, Date.now() - 4 * 3600_000)
   dbS.insert({ level: 'fact', content: '主窗口的记忆', project: 'dsh', source_session: widS3, created_at: 100 })
   const mainAgent = { session: { header: { id: widS3 } }, steer: () => {} }
-  dreamSweepOnce({ get: (name) => (name === 'agents' ? { get: () => mainAgent } : undefined) }, cfgS, '.dsh-meow', new Map([[widS3, wsS]]))
+  dreamSweepOnce({ get: (name) => (name === 'agents' ? { get: () => mainAgent } : undefined) }, cfgS, wsS, new Map([[widS3, wsS]]))
   check('sweep: main window still dreamed (lease held)', dbS.getDreamLease(widS3) !== null)
 
   // ⑤ 手动路径豁免：startWindowDream 直呼（/dream、memory_dream 走这里）不被判定拦截
   const steeredS = []
   const manualAgent = { session: { header: { id: widS, origin: 'subagent' } }, steer: (m) => steeredS.push(m) }
-  startWindowDream({ get: () => undefined }, manualAgent, wsS, '.dsh-meow')
+  startWindowDream({ get: () => undefined }, manualAgent, wsS, wsS)
   check('manual startWindowDream not blocked for subagent', steeredS.length === 1)
 
   dbS.close()
@@ -368,8 +370,8 @@ dbD.insert({ level: 'rules', content: '项目规则', project: 'dsh', source_ses
 const otherFact = dbD.insert({ level: 'fact', content: '提取过的事实', project: 'dsh', source_session: 'win-other', created_at: 500 })
 const otherTopic = dbD.insert({ level: 'topic', content: '提取过的话题', title: '外来话题', project: 'femwa', source_session: 'win-other', created_at: 600 })
 dbD.insert({ level: 'fact', content: '没提取过的', project: 'meow-eyes', source_session: 'win-other2', created_at: 700 })
-markInjected(wsD, wid, [otherFact.id, otherTopic.id], '.dsh-meow') // 模拟本窗口提取记录（injected）
-const rounds = collectDreamRounds(dbD, wid, wsD, '.dsh-meow')
+markInjected(wsD, wid, [otherFact.id, otherTopic.id], wsD) // 模拟本窗口提取记录（injected）
+const rounds = collectDreamRounds(dbD, wid, wsD, wsD)
 check('dream rounds: 3 (atomic + topic + project-summary)', rounds.length === 3 && rounds[0].kind === 'atomic' && rounds[1].kind === 'topic' && rounds[2].kind === 'project-summary', `got ${JSON.stringify(rounds.map((r) => r.kind))}`)
 check('project-summary round lists window projects sorted', JSON.stringify(rounds[2].projects) === JSON.stringify(['dsh', 'femwa']), `got ${JSON.stringify(rounds[2].projects)}`)
 check('atomic groups: dsh, femwa, unlabeled last', rounds[0].groups.map((g) => g.name).join(',') === 'dsh,femwa,', `got ${rounds[0].groups.map((g) => g.name).join(',')}`)
@@ -392,17 +394,17 @@ check('dream round0 excludes topic rows', !d0.includes('话题X') && !d0.include
 
 // v0.17.0：accessed（memory_read 查阅留痕）进第一轮清单；rules 防 churn 时间过滤
 const readFact = dbD.insert({ level: 'fact', content: '查阅过的事实', project: 'dsh', source_session: 'win-other3', created_at: 800 })
-markAccessed(wsD, wid, [readFact.id], '.dsh-meow')
-const roundsAcc = collectDreamRounds(dbD, wid, wsD, '.dsh-meow')
+markAccessed(wsD, wid, [readFact.id], wsD)
+const roundsAcc = collectDreamRounds(dbD, wid, wsD, wsD)
 check('accessed rows included in round1', roundsAcc[0].groups.some((g) => g.rows.some((r) => r.content === '查阅过的事实')))
-check('seen set = injected(2)+accessed(1), nothing else tracked', readSeen(wsD, wid, '.dsh-meow').size === 3)
+check('seen set = injected(2)+accessed(1), nothing else tracked', readSeen(wsD, wid, wsD).size === 3)
 const oldRule = dbD.insert({ level: 'rules', content: '陈年旧规则', project: 'dsh', source_session: wid })
 dbD.db.prepare('UPDATE rules SET updated_at = ? WHERE id = ?').run(Date.now() - 3 * 86_400_000, oldRule.id)
 dbD.insert({ level: 'rules', content: '新鲜规则', project: 'dsh', source_session: wid })
-const roundsFiltered = collectDreamRounds(dbD, wid, wsD, '.dsh-meow') // 默认 rulesReviewDays=2
+const roundsFiltered = collectDreamRounds(dbD, wid, wsD, wsD) // 默认 rulesReviewDays=2
 check('stale rule excluded by default 2d filter', !roundsFiltered[0].groups.some((g) => g.rows.some((r) => r.content === '陈年旧规则')))
 check('fresh rule still included', roundsFiltered[0].groups.some((g) => g.rows.some((r) => r.content === '新鲜规则')))
-const roundsNoFilter = collectDreamRounds(dbD, wid, wsD, '.dsh-meow', 0)
+const roundsNoFilter = collectDreamRounds(dbD, wid, wsD, wsD, 0)
 check('rules filter off with 0', roundsNoFilter[0].groups.some((g) => g.rows.some((r) => r.content === '陈年旧规则')))
 const dreamMsg1 = buildDreamMessage(dbD, wid, 5000, rounds, 1)
 const d1 = dreamMsg1.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
@@ -419,7 +421,7 @@ dbD.close()
 // topic 轮默认触发：窗口无任何记忆也发（空 topic 轮提示 AI 回顾建新 topic）
 const wsE = mkdtempSync(join(tmpdir(), 'mm-drem-'))
 const dbE = new MemoryDb(memoryDbPath(wsE))
-const eRounds = collectDreamRounds(dbE, 'win-e', wsE, '.dsh-meow')
+const eRounds = collectDreamRounds(dbE, 'win-e', wsE, wsE)
 check('empty window still gets topic round', eRounds.length === 1 && eRounds[0].kind === 'topic' && eRounds[0].groups.length === 0)
 const eMsg = buildDreamMessage(dbE, 'win-e', 5000, eRounds, 0)
 const et = eMsg.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
@@ -428,22 +430,22 @@ dbE.close()
 
 // startWindowDream 抢占 + advanceDream 收尾 + 补收尾 + abortDream（租约链路）
 const wsClaim = mkdtempSync(join(tmpdir(), 'mm-claim-'))
-const dbClaim = new MemoryDb(memoryDbPath(wsClaim))
+const dbClaim = getDb(wsClaim, wsClaim)
 dbClaim.touchWindow('win-claim', wsClaim, Date.now())
 const agentClaim = { session: { header: { id: 'win-claim', cwd: wsClaim } }, steer: () => {} }
 // topic 轮默认触发：无记忆窗口也启动（空 topic 轮让 AI 回顾建新 topic）
-check('startWindowDream: no memories still starts (topic round)', startWindowDream({}, agentClaim, wsClaim, '.dsh-meow') === true)
+check('startWindowDream: no memories still starts (topic round)', startWindowDream({}, agentClaim, wsClaim, wsClaim) === true)
 check('lease set while running', dbClaim.getDreamLease('win-claim') !== null)
-advanceDream(agentClaim, '.dsh-meow') // 仅 topic 轮 → 收尾
+advanceDream(agentClaim, wsClaim) // 仅 topic 轮 → 收尾
 check('advanceDream finishes (only topic round)', dbClaim.getDreamLease('win-claim') === null)
 check('advanceDream sets last_dream_time', dbClaim.getWindow('win-claim')?.last_dream_time !== null)
 dbClaim.insert({ level: 'fact', content: '待整理的记忆', source_session: 'win-claim' })
-check('startWindowDream: ok', startWindowDream({}, agentClaim, wsClaim, '.dsh-meow') === true)
-check('startWindowDream: second rejected while running', startWindowDream({}, agentClaim, wsClaim, '.dsh-meow') === false)
+check('startWindowDream: ok', startWindowDream({}, agentClaim, wsClaim, wsClaim) === true)
+check('startWindowDream: second rejected while running', startWindowDream({}, agentClaim, wsClaim, wsClaim) === false)
 check('lease set while running', dbClaim.getDreamLease('win-claim') !== null)
-advanceDream(agentClaim, '.dsh-meow') // 原子轮完成 → 推进到 topic 轮
+advanceDream(agentClaim, wsClaim) // 原子轮完成 → 推进到 topic 轮
 check('advanceDream advances to topic round', dbClaim.getDreamLease('win-claim')?.group_idx === 1)
-advanceDream(agentClaim, '.dsh-meow') // topic 轮完成 → 收尾
+advanceDream(agentClaim, wsClaim) // topic 轮完成 → 收尾
 check('advanceDream finishes after topic round', dbClaim.getDreamLease('win-claim') === null)
 check('advanceDream sets last_dream_time', dbClaim.getWindow('win-claim')?.last_dream_time !== null)
 
@@ -451,7 +453,7 @@ check('advanceDream sets last_dream_time', dbClaim.getWindow('win-claim')?.last_
 // ——dream 多组不分轮，一个任务一个 turn）。有 followup 也必须走 steer 推进。
 {
   const wsDual = mkdtempSync(join(tmpdir(), 'mm-dual-'))
-  const dbDual = new MemoryDb(memoryDbPath(wsDual))
+  const dbDual = getDb('', wsDual)
   dbDual.touchWindow('win-dual', wsDual, Date.now())
   dbDual.insert({ level: 'fact', content: '双模式投递的待整理记忆', source_session: 'win-dual' })
   const fuCalled = []
@@ -461,23 +463,23 @@ check('advanceDream sets last_dream_time', dbClaim.getWindow('win-claim')?.last_
     followup: (m) => fuCalled.push(m),
     steer: (m) => stCalled.push(m),
   }
-  check('startWindowDream uses followup (standalone turn)', startWindowDream({}, agentDual, wsDual, '.dsh-meow') === true && fuCalled.length === 1 && stCalled.length === 0)
-  advanceDream(agentDual, '.dsh-meow') // 原子轮完成 → 推进到 topic 轮
+  check('startWindowDream uses followup (standalone turn)', startWindowDream({}, agentDual, wsDual, wsDual) === true && fuCalled.length === 1 && stCalled.length === 0)
+  advanceDream(agentDual, wsDual) // 原子轮完成 → 推进到 topic 轮
   check('advanceDream uses steer (rounds stay in one turn)', fuCalled.length === 1 && stCalled.length === 1 && dbDual.getDreamLease('win-dual')?.group_idx === 1)
-  advanceDream(agentDual, '.dsh-meow') // topic 轮完成 → 收尾
+  advanceDream(agentDual, wsDual) // topic 轮完成 → 收尾
   check('advanceDream finishes dual-mode dream (heartbeat stopped too)', dbDual.getDreamLease('win-dual') === null && stCalled.length === 1)
   dbDual.close()
 }
-check('startWindowDream: ok again after finish', startWindowDream({}, agentClaim, wsClaim, '.dsh-meow') === true)
+check('startWindowDream: ok again after finish', startWindowDream({}, agentClaim, wsClaim, wsClaim) === true)
 // 模拟中断：start 后不 advance（如同进程崩溃/重载），租约过期后补收尾恢复
 dbClaim.db.prepare('UPDATE windows SET dream_progress_at = ? WHERE session_id = ?').run(Date.now() - 2 * 30 * 60_000, 'win-claim')
-const nRecover = recoverInterruptedDream(dbClaim, 'win-claim', wsClaim, '.dsh-meow')
+const nRecover = recoverInterruptedDream(dbClaim, 'win-claim', wsClaim, wsClaim)
 check('recoverInterruptedDream clears lease', dbClaim.getDreamLease('win-claim') === null && dbClaim.getWindow('win-claim')?.last_dream_time !== null && nRecover >= 0)
 // abortDream 立即收尾（用户中止）
 dbClaim.insert({ level: 'fact', content: '中止用记忆', source_session: 'win-claim' })
 dbClaim.touchWindow('win-claim', wsClaim, Date.now())
-startWindowDream({}, agentClaim, wsClaim, '.dsh-meow')
-abortDream(agentClaim, '.dsh-meow')
+startWindowDream({}, agentClaim, wsClaim, wsClaim)
+abortDream(agentClaim, wsClaim)
 check('abortDream finalizes immediately', dbClaim.getDreamLease('win-claim') === null && dbClaim.getWindow('win-claim')?.last_dream_time !== null)
 dbClaim.close()
 
@@ -487,7 +489,7 @@ dbClaim.close()
 // dream 调用点在 setInterval 里，未捕获异常会把整个 dsh 进程带走。
 // 修复=safeSteer 兜底 + 释放租约 + 返回 false（下个周期自然重试）。
 const wsSteerFail = mkdtempSync(join(tmpdir(), 'mm-steer-fail-'))
-const dbSteerFail = new MemoryDb(memoryDbPath(wsSteerFail))
+const dbSteerFail = getDb('', wsSteerFail)
 dbSteerFail.touchWindow('win-steer-fail', wsSteerFail, Date.now())
 dbSteerFail.insert({ level: 'fact', content: 'steer 兜底用例', source_session: 'win-steer-fail' })
 const agentThrows = {
@@ -496,24 +498,24 @@ const agentThrows = {
     throw new Error('agent "win-steer-fail" cannot read inbox state: its projection registration is not active')
   },
 }
-check('startWindowDream: steer throw → returns false, does not crash', startWindowDream({}, agentThrows, wsSteerFail, '.dsh-meow') === false)
+check('startWindowDream: steer throw → returns false, does not crash', startWindowDream({}, agentThrows, wsSteerFail, wsSteerFail) === false)
 check('startWindowDream: steer throw → lease released for retry', dbSteerFail.getDreamLease('win-steer-fail') === null)
 const steeredSteerOk = []
 const agentSteerOk = { session: { header: { id: 'win-steer-fail', cwd: wsSteerFail } }, steer: (m) => steeredSteerOk.push(m) }
 check(
   'startWindowDream: normal steer still starts after a failed attempt',
-  startWindowDream({}, agentSteerOk, wsSteerFail, '.dsh-meow') === true && steeredSteerOk.length === 1,
+  startWindowDream({}, agentSteerOk, wsSteerFail, wsSteerFail) === true && steeredSteerOk.length === 1,
 )
 dbSteerFail.close()
 
 // 跨实例推进（原「孤儿收尾」）：状态在 DB 租约，任何实例的 turn-stopping 都能推进/收尾
 const wsOrphan = mkdtempSync(join(tmpdir(), 'mm-orphan-'))
-const dbOrphan = new MemoryDb(memoryDbPath(wsOrphan))
+const dbOrphan = getDb(wsOrphan, wsOrphan)
 dbOrphan.touchWindow('win-orphan', wsOrphan, Date.now())
 dbOrphan.insert({ level: 'fact', content: '孤儿窗口的记忆', source_session: 'win-orphan' })
 dbOrphan.claimDream('win-orphan', 'residual-fiber', Date.now(), 60_000) // 模拟残留 fiber start 写了租约
-advanceDream({ session: { header: { id: 'win-orphan', cwd: wsOrphan } } }, '.dsh-meow') // 原子轮 → topic 轮
-advanceDream({ session: { header: { id: 'win-orphan', cwd: wsOrphan } } }, '.dsh-meow') // topic 轮 → 收尾
+advanceDream({ session: { header: { id: 'win-orphan', cwd: wsOrphan } } }, wsOrphan) // 原子轮 → topic 轮
+advanceDream({ session: { header: { id: 'win-orphan', cwd: wsOrphan } } }, wsOrphan) // topic 轮 → 收尾
 check('orphan dream finalized by advanceDream', dbOrphan.getDreamLease('win-orphan') === null &&
   dbOrphan.getWindow('win-orphan')?.last_dream_time !== null)
 // 多轮推进：原子轮 → topic 轮 → 项目总结轮——advanceDream 逐轮 steer，最后一轮收尾
@@ -522,14 +524,14 @@ dbOrphan.insert({ level: 'topic', content: '孤儿话题内容', title: '孤儿T
 dbOrphan.touchWindow('win-orphan', wsOrphan, Date.now())
 let steeredMsg = null
 const agent2 = { session: { header: { id: 'win-orphan', cwd: wsOrphan } }, steer: (m) => { steeredMsg = m } }
-startWindowDream({}, agent2, wsOrphan, '.dsh-meow')
+startWindowDream({}, agent2, wsOrphan, wsOrphan)
 check('lease group_idx 0 after start', dbOrphan.getDreamLease('win-orphan')?.group_idx === 0)
-advanceDream(agent2, '.dsh-meow')
+advanceDream(agent2, wsOrphan)
 check('advanceDream advances to topic round + steers', dbOrphan.getDreamLease('win-orphan')?.group_idx === 1 && steeredMsg !== null)
-advanceDream(agent2, '.dsh-meow')
+advanceDream(agent2, wsOrphan)
 const steeredText = steeredMsg !== null && Array.isArray(steeredMsg?.content) ? steeredMsg.content.map((b) => (b.type === 'text' ? b.text : '')).join('') : ''
 check('advanceDream advances to project-summary round (p2)', dbOrphan.getDreamLease('win-orphan')?.group_idx === 2 && steeredText.includes('本组涉及的项目：p2'))
-advanceDream(agent2, '.dsh-meow')
+advanceDream(agent2, wsOrphan)
 check('advanceDream finalizes after last round', dbOrphan.getDreamLease('win-orphan') === null)
 dbOrphan.close()
 
@@ -549,26 +551,26 @@ check('findSimilar ranks duplicate higher', sims.length === 1 && sims[0].id === 
 check('findSimilar similarity > 0.5 for near-duplicate', sims[0].similarity > 0.5, `got ${sims[0].similarity}`)
 
 // seen 记录：markSearched 后 readSeen 合并 injected+searched
-markSearched(wsR, 'win-a', ['seen-id-1'], '.dsh-meow')
-const seenSet = readSeen(wsR, 'win-a', '.dsh-meow')
+markSearched(wsR, 'win-a', ['seen-id-1'], wsR)
+const seenSet = readSeen(wsR, 'win-a', wsR)
 check('readSeen after markSearched', seenSet.has('seen-id-1'))
-check('readSeen empty for other session', readSeen(wsR, 'win-b', '.dsh-meow').size === 0)
+check('readSeen empty for other session', readSeen(wsR, 'win-b', wsR).size === 0)
 
 // accessed（v0.17.0）：memory_read 查阅留痕——进 dream 清单；压缩释放保留 accessed
-markInjected(wsR, 'win-a', ['inj-id-1'], '.dsh-meow')
-markAccessed(wsR, 'win-a', ['read-id-1'], '.dsh-meow')
-check('readSeen includes accessed', readSeen(wsR, 'win-a', '.dsh-meow').has('read-id-1'))
-releaseSeen(wsR, 'win-a', '.dsh-meow')
-const released = JSON.parse(readFileSync(join(wsR, '.dsh-meow', 'sessions', 'win-a.json'), 'utf8'))
+markInjected(wsR, 'win-a', ['inj-id-1'], wsR)
+markAccessed(wsR, 'win-a', ['read-id-1'], wsR)
+check('readSeen includes accessed', readSeen(wsR, 'win-a', wsR).has('read-id-1'))
+releaseSeen(wsR, 'win-a', wsR)
+const released = JSON.parse(readFileSync(join(wsR, 'sessions', 'win-a.json'), 'utf8'))
 check('releaseSeen keeps accessed, clears injected/searched',
   released.accessed.includes('read-id-1') && released.injected.length === 0 && released.searched.length === 0 &&
-  !readSeen(wsR, 'win-a', '.dsh-meow').has('inj-id-1') && !readSeen(wsR, 'win-a', '.dsh-meow').has('seen-id-1') &&
-  readSeen(wsR, 'win-a', '.dsh-meow').has('read-id-1'))
+  !readSeen(wsR, 'win-a', wsR).has('inj-id-1') && !readSeen(wsR, 'win-a', wsR).has('seen-id-1') &&
+  readSeen(wsR, 'win-a', wsR).has('read-id-1'))
 dbR.close()
 
 // ── 会话列表 dream 图标：collectDreamStates 全量判定（dreamed / dreaming 双态） ─
 const wsIcon = mkdtempSync(join(tmpdir(), 'mm-icon-'))
-const dbIcon = new MemoryDb(memoryDbPath(wsIcon))
+const dbIcon = getDb('', wsIcon)
 dbIcon.touchWindow('s-dreamed', wsIcon, Date.now() - 1000)
 dbIcon.finishDream('s-dreamed', Date.now() - 500) // dream 过且之后无活动
 dbIcon.touchWindow('s-active', wsIcon, Date.now() - 3000)
@@ -581,13 +583,13 @@ dbIcon.claimDream('s-dreaming', 'owner-test', Date.now() - 3000, 30 * 60_000) //
 // dsh 0.1.2 及以下返回扁平 SessionHeader[]（{id, cwd}）；
 // dsh 0.1.3+ 返回 SessionPersistenceSnapshot[]（{header:{id,cwd}, revision,...}）。
 // 两种形状都必须能判定——旧版假数据曾把「只认扁平」的错误契约固化进测试。
-const iconStatesFlat = collectDreamStates([{ id: 'any', cwd: wsIcon }]) // 旧宿主（0.1.2-）形状
+const iconStatesFlat = collectDreamStates([{ id: 'any', cwd: wsIcon }], wsIcon) // 旧宿主（0.1.2-）形状
 check('dream-states: flat shape (dsh<=0.1.2) dreamed/dreaming split', JSON.stringify(iconStatesFlat) === JSON.stringify({ dreamed: ['s-dreamed'], dreaming: ['s-dreaming'] }), JSON.stringify(iconStatesFlat))
-const iconStates = collectDreamStates([{ header: { id: 'any', cwd: wsIcon }, revision: 'r1' }]) // 新宿主（0.1.3+）形状
+const iconStates = collectDreamStates([{ header: { id: 'any', cwd: wsIcon }, revision: 'r1' }], wsIcon) // 新宿主（0.1.3+）形状
 check('dream-states: snapshot shape (dsh>=0.1.3) dreamed/dreaming split', JSON.stringify(iconStates) === JSON.stringify({ dreamed: ['s-dreamed'], dreaming: ['s-dreaming'] }), JSON.stringify(iconStates))
 const wsNoDb = mkdtempSync(join(tmpdir(), 'mm-nodb-'))
-const iconStates2 = collectDreamStates([{ header: { id: 'any', cwd: wsNoDb }, revision: 'r1' }])
-check('dream-states: workspace without memory db skipped (no db created)', iconStates2.dreamed.length === 0 && iconStates2.dreaming.length === 0 && !existsSync(join(wsNoDb, '.dsh-meow', 'memory.db')))
+const iconStates2 = collectDreamStates([{ header: { id: 'any', cwd: wsNoDb }, revision: 'r1' }], wsNoDb)
+check('dream-states: central db absent → empty (no db created)', iconStates2.dreamed.length === 0 && iconStates2.dreaming.length === 0 && !existsSync(join(wsNoDb, 'memory.db')))
 dbIcon.close()
 
 // ── dream 时区（用户系统是美区时间，抑制时段必须按 Asia/Shanghai 算） ───────
@@ -664,7 +666,7 @@ check('plain fact → fact', db2.list('fact').length === 2 && db2.list('fact').s
 check('migrate idempotent', migrateLegacy(db2, ws2) === null)
 
 // inject + sessions/ 去重（命中检索按新语义：未锚定只搜全局；这里先锚定 dsh 模拟干活中的会话）
-setCurrentProject(ws2, 'test-session-1', 'dsh', '.dsh-meow')
+setCurrentProject(ws2, 'test-session-1', 'dsh', ws2)
 db2.insert({ level: 'fact', content: '3081 端口是喵版 dsh', project: 'dsh', created_at: Date.now() })
 db2.insert({ level: 'soul', content: '我是用户的长期协作伙伴。', created_at: Date.now() })
 // listProjectNames：四表 project 列并集（只挂 fact 的项目名也出现）
@@ -677,7 +679,7 @@ db2.insert({ level: 'fact', content: '多项目条目', project: 'meow-fold,meow
 check('project names expand multi-value', db2.listProjectNames().includes('meow-fold') && db2.listProjectNames().includes('meow-smooth'))
 // 导引 topic 带 project 归属
 db2.insert({ level: 'topic', content: '【起因】x【经过】y【结果】z', title: '记忆插件重构', project: 'meow-memory', created_at: Date.now() })
-const inj = buildInjection(db2, ws2, 'test-session-1', '3081 现在什么状态？', { hitTopK: 3 }, '.dsh-meow')
+const inj = buildInjection(db2, ws2, 'test-session-1', '3081 现在什么状态？', { hitTopK: 3 }, ws2)
 check('injection produced', inj !== null)
 if (inj) {
   check('injection blocks', inj.text.includes('===== 长期记忆 =====') && inj.text.includes('【关于user】') &&
@@ -689,19 +691,19 @@ if (inj) {
   check('injection no topic/project title list', !inj.text.includes('- topic:') && !inj.text.includes('- project:'))
   check('injection has no legacy prompt separator', !inj.text.includes('===== 长期记忆结束 =====') && !inj.text.includes('本轮用户prompt：'))
   check('injection tool name fixed', !inj.text.includes('memory_recall') && inj.text.includes('memory_search'))
-  check('sessions file written', readFileSync(join(ws2, '.dsh-meow', 'sessions', 'test-session-1.json'), 'utf8').includes(inj.injectedIds[0]))
+  check('sessions file written', readFileSync(join(ws2, 'sessions', 'test-session-1.json'), 'utf8').includes(inj.injectedIds[0]))
 }
-const inj2 = buildInjection(db2, ws2, 'test-session-1', '3081 又怎么了？', { hitTopK: 3 }, '.dsh-meow')
+const inj2 = buildInjection(db2, ws2, 'test-session-1', '3081 又怎么了？', { hitTopK: 3 }, ws2)
 check('dedup same session', inj2 === null || !inj2.text.includes('3081 端口是喵版 dsh'))
 // 首轮不命中（只注入长期记忆）；命中链路从第二轮起（buildHitInjection）
-setCurrentProject(ws2, 'test-session-2', 'dsh', '.dsh-meow')
-const inj3 = buildHitInjection(db2, ws2, 'test-session-2', '3081 又怎么了？', { hitTopK: 3 }, '.dsh-meow')
+setCurrentProject(ws2, 'test-session-2', 'dsh', ws2)
+const inj3 = buildHitInjection(db2, ws2, 'test-session-2', '3081 又怎么了？', { hitTopK: 3 }, ws2)
 check('new session gets hits', inj3 !== null && inj3.text.includes('3081 端口是喵版 dsh'))
 // reflect 消息（独立库：topic 归 dream，反思不含 topic 规则）
 const ws3 = mkdtempSync(join(tmpdir(), 'mm-reflect-'))
 const db3 = new MemoryDb(memoryDbPath(ws3))
 db3.insert({ level: 'topic', content: '【起因】重构记忆插件【经过】设计讨论【结果】未定', title: 'meow-memory 重构', goal: '让记忆插件 v2 上线' })
-const msg = buildReflectMessage(ws3, '我们讨论一下猫眼插件的模型部署', '.dsh-meow')
+const msg = buildReflectMessage(ws3, '我们讨论一下猫眼插件的模型部署', ws3)
 const txt = msg.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
 check('reflect message sections', txt.includes('记忆反思任务') && txt.includes('【一】') && txt.includes('【二】') && txt.includes('【三】'))
 check('reflect update rules', txt.includes('信息已经过时') && txt.includes('标 stale') && txt.includes('关键词不准'))
@@ -730,17 +732,27 @@ function makeCtx(subagents) {
   return { ctx, tools, handlers, effects }
 }
 
+// apply 级测试统一用一个临时中央库目录；并预置 migrated_v3，
+// 防止 apply 启动时的自动迁移把 windowIndex 里的真实库合并进测试库。
+const applyDir = mkdtempSync(join(tmpdir(), 'mm-apply-'))
+migrateToCentral([], applyDir)
+
 const { ctx, tools, handlers } = makeCtx()
-await apply(ctx, { enabled: true, projectDir: '.dsh-meow', promptLang: 'zh' })
+await apply(ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh' })
 check('seven tools registered', tools.length === 7 && ['memory_remember', 'memory_search', 'memory_find_similar', 'memory_read', 'memory_update', 'memory_dream', 'memory_project']
   .every((name) => tools.some((t) => t.name === name)), `got ${tools.map((t) => t.name).join(',')}`)
+
+// v3 中央存储：apply 的工具闭包固定 dir=applyDir（getDb 忽略 workspace），
+// 工具测试的数据与 seen 记账必须放 applyDir（中央库 + 中央 sessions）。
+let dbA = getDb('', applyDir)
+dbA.insert({ level: 'fact', content: 'search note 测试数据 特异词sn', project: 'dsh' })
 
 // memory_dream 工具入口：子代理会话拒绝（与 /dream 命令守卫同语义——fork 播种父
 // 会话 turn，工具 schema 对子代理可见，误调在此拦下，不进 windows 表不留痕迹）。
 // 底层 startWindowDream 的手动豁免不受影响（见上方"manual startWindowDream"用例）。
 {
   const wsT = mkdtempSync(join(tmpdir(), 'mm-dream-tool-'))
-  const dbT = getDb(wsT, '.dsh-meow')
+  const dbT = getDb('', applyDir)
   const dreamToolT = tools.find((t) => t.name === 'memory_dream')
   const subExec = { agent: { session: { header: { cwd: wsT, id: 'win-subagent-tool', origin: 'subagent' } } } }
   const rSubTool = await dreamToolT.execute({}, subExec)
@@ -750,7 +762,7 @@ check('seven tools registered', tools.length === 7 && ['memory_remember', 'memor
   const rMainTool = await dreamToolT.execute({}, mainExec)
   check('memory_dream tool allows main window (dream starts, topic round)', rMainTool.ok === true && dbT.getDreamLease('win-main-tool') !== null, JSON.stringify(rMainTool))
   dbT.finishDream('win-main-tool', Date.now()) // 清理：收尾不留悬挂租约
-  dbT.close()
+// dbT.close() (共享 applyDir 实例，不单独关)
   rmSync(wsT, { recursive: true, force: true })
 }
 
@@ -761,8 +773,8 @@ const searchResult = await searchTool.execute({ query: '随便' }, execCtx)
 check('search note hints chat log', searchResult.note.includes('如果你确实需要更多细节，可以直接去聊天记录里搜索相关关键词'))
 check('search hits carry real updated_at', searchResult.hits.every((h) => h.updated_at > 0))
 // search project/status 逗号多选（OR 语义）
-db.insert({ level: 'fact', content: '多选测试甲 独特内容', project: 'dsh', created_at: Date.now() })
-db.insert({ level: 'fact', content: '多选测试乙 独特内容', project: 'femwa', created_at: Date.now() })
+dbA.insert({ level: 'fact', content: '多选测试甲 独特内容', project: 'dsh', created_at: Date.now() })
+dbA.insert({ level: 'fact', content: '多选测试乙 独特内容', project: 'femwa', created_at: Date.now() })
 const sMulti = await searchTool.execute({ query: '多选测试', project: 'dsh,femwa' }, execCtx)
 check('search project multi-select OR', sMulti.hits.some((h) => h.project === 'dsh') && sMulti.hits.some((h) => h.project === 'femwa'))
 const sSingle = await searchTool.execute({ query: '多选测试', project: 'dsh' }, execCtx)
@@ -774,15 +786,20 @@ check('search shows keywords + relative time, no content', searchRender.some((b)
 
 // search 5+5 分段（用户拍板 2026-08-19）：前 5 条无脑取（不排除已见/本 session 建立的），
 // 第 6 名起绕开已见（injected+searched）补齐。分数相同时排名稳定=插入序。
+// 需要精确的 12 条独立数据 → 清空 applyDir 中央库（前面块的断言已跑完）。
+closeAllDbs()
+rmSync(applyDir, { recursive: true, force: true })
+migrateToCentral([], applyDir)
+dbA = getDb('', applyDir)
 const wsSplit = mkdtempSync(join(tmpdir(), 'mm-split-'))
-const dbSplit = new MemoryDb(memoryDbPath(wsSplit))
+const dbSplit = getDb('', applyDir)
 for (let i = 1; i <= 12; i++) {
   dbSplit.insert({ level: 'fact', content: `分段检索测试 内容${i} 特异性词${i}`, project: 'dsh', source_session: i === 5 || i === 12 ? 's-split' : 'win-other' })
 }
 const splitRows = dbSplit.list('fact')
 const sid = (n) => splitRows[n - 1].id // 排名 = 插入序（BM25 分数相同）
-markInjected(wsSplit, 's-split', [sid(1), sid(2)], '.dsh-meow')
-markSearched(wsSplit, 's-split', [sid(6), sid(7)], '.dsh-meow')
+markInjected(wsSplit, 's-split', [sid(1), sid(2)], applyDir)
+markSearched(wsSplit, 's-split', [sid(6), sid(7)], applyDir)
 const splitCtx = { agent: { session: { header: { cwd: wsSplit, id: 's-split' } } } }
 const sp = await searchTool.execute({ query: '分段检索测试', project: 'dsh', k: 10 }, splitCtx)
 const spIds = new Set(sp.hits.map((h) => h.id))
@@ -792,7 +809,7 @@ check('search rank6+ skips seen entries (6,7 excluded)', !spIds.has(sid(6)) && !
 check('search blind includes this-session memory', spIds.has(sid(5)))
 check('search fresh includes this-session unseen memory', spIds.has(sid(12)))
 check('search 5+5 exact result set', JSON.stringify([...spIds].sort()) === JSON.stringify([1, 2, 3, 4, 5, 8, 9, 10, 11, 12].map(sid).sort()))
-const spSeen = readSeen(wsSplit, 's-split', '.dsh-meow')
+const spSeen = readSeen(wsSplit, 's-split', applyDir)
 check('search marks all returned ids as searched', [...spIds].every((id) => spSeen.has(id)))
 // 未标记（project null）条目：能检索且输出 project=''（不触发输出校验失败）
 dbSplit.insert({ level: 'fact', content: '分段检索测试 未标记条目 特异性词u', project: null, source_session: 'win-other' })
@@ -802,7 +819,7 @@ check('search unmarked row returns project=""', spNull.hits.length >= 1 && spNul
 const sp3 = await searchTool.execute({ query: '分段检索测试', project: 'dsh', k: 3 }, splitCtx)
 check('search k=3: blind only', sp3.hits.length === 3 && sp3.hits.some((h) => h.id === sid(1)))
 check('search description mentions 5+5 rule', searchTool.description.includes('前 5 条按相关度无脑取') && searchTool.description.includes('绕开已注入/已检索'))
-dbSplit.close()
+// dbSplit.close() (共享 applyDir 实例，不单独关)
 const readTool = tools.find((t) => t.name === 'memory_read')
 const readNotFound = readTool.output.render({}, { found: false })
 check('read not-found hints chat log', readNotFound[0].text.includes('聊天记录里搜索相关关键词'))
@@ -812,15 +829,15 @@ check('read found hints chat log', readFound[0].text.includes('聊天记录里�
 // memory_update 支持 keywords 手动修正（AI 主动提取/纠偏）
 const updateTool = tools.find((t) => t.name === 'memory_update')
 const updCtx = { agent: { session: { header: { cwd: ws, id: 't-upd' } } } }
-const kwId = db.insert({ level: 'fact', content: '测试关键词修正', project: 'dsh', id: newId(1_700_000_000_000) }).id
+const kwId = dbA.insert({ level: 'fact', content: '测试关键词修正', project: 'dsh', id: newId(1_700_000_000_000) }).id
 const upRes = await updateTool.execute({ id: kwId.slice(0, 8), keywords: ['关键词甲', '关键词乙'] }, updCtx)
 check('update keywords ok', upRes.ok === true)
-const kwRow = db.findById(kwId)
+const kwRow = dbA.findById(kwId)
 check('update keywords applied', JSON.stringify(kwRow.row.keywords) === JSON.stringify(['关键词甲', '关键词乙']))
 const upEmpty = await updateTool.execute({ id: kwId.slice(0, 8), keywords: [] }, updCtx)
-check('update keywords [] keeps unchanged', upEmpty.ok === true && JSON.stringify(db.findById(kwId).row.keywords) === JSON.stringify(['关键词甲', '关键词乙']))
+check('update keywords [] keeps unchanged', upEmpty.ok === true && JSON.stringify(dbA.findById(kwId).row.keywords) === JSON.stringify(['关键词甲', '关键词乙']))
 const up5 = await updateTool.execute({ id: kwId.slice(0, 8), importance: 5 }, updCtx)
-check('update importance unbounded (no clamp)', up5.ok === true && db.findById(kwId).row.importance === 5)
+check('update importance unbounded (no clamp)', up5.ok === true && dbA.findById(kwId).row.importance === 5)
 
 // project 多值（逗号分隔）：包含判断 / 显示标签
 check('projectCovers multi-value includes', projectCovers('dsh,femwa', 'femwa') === true && projectCovers('dsh,femwa', 'meow-eyes') === false)
@@ -857,10 +874,10 @@ check('framework words: en pack renders english', (() => {
   try { return relativeTime(Date.now() - 5 * 60_000) === '5 min ago' && relativeTime(null) === 'no timestamp' && projectLabel(null) === 'unlabeled' } finally { setPromptLang('zh') }
 })())
 // memory_update 刷新记忆时间戳（updated_at = 最后更新时间）
-const beforeTs = db.findById(kwId).row.updated_at
+const beforeTs = dbA.findById(kwId).row.updated_at
 await new Promise((r) => setTimeout(r, 5))
 const upTs = await updateTool.execute({ id: kwId.slice(0, 8), content: '测试关键词修正（时间戳刷新）' }, updCtx)
-const afterTs = db.findById(kwId).row.updated_at
+const afterTs = dbA.findById(kwId).row.updated_at
 check('update refreshes memory timestamp', upTs.ok === true && afterTs !== null && (beforeTs === null || afterTs > beforeTs) && afterTs > Date.now() - 60_000)
 
 // memory_remember 读回确认：返回实际存储结果（关键词/项目归属），模型知道干了什么
@@ -881,80 +898,80 @@ check('remember requires importance', missI.includes('importance 参数必填'))
 
 // 压缩信号释放 seen：compaction 事件 → sessions 文件清空 → 记忆可再次命中
 const wsSeen = mkdtempSync(join(tmpdir(), 'mm-seen-'))
-const dbSeen = new MemoryDb(memoryDbPath(wsSeen))
+const dbSeen = getDb('', applyDir)
 dbSeen.insert({ level: 'fact', content: '压缩后应能重新命中的记忆', project: 'dsh', source_session: 'win-other' })
-markSearched(wsSeen, 's-comp', ['fake-id-1'], '.dsh-meow')
-check('seen marked before compaction', readSeen(wsSeen, 's-comp', '.dsh-meow').size === 1)
+markSearched(wsSeen, 's-comp', ['fake-id-1'], applyDir)
+check('seen marked before compaction', readSeen(wsSeen, 's-comp', applyDir).size === 1)
 await handlers['session/event']({ id: 's-comp', header: { cwd: wsSeen } }, { type: 'compaction/summary', time: Date.now() })
-check('seen released after compaction', readSeen(wsSeen, 's-comp', '.dsh-meow').size === 0)
+check('seen released after compaction', readSeen(wsSeen, 's-comp', applyDir).size === 0)
 const searchCtx2 = { agent: { session: { header: { cwd: wsSeen, id: 's-comp' } } } }
 const reHit = await searchTool.execute({ query: '重新命中', project: 'dsh' }, searchCtx2)
 check('search re-hits after compaction', reHit.hits.some((h) => h.content.includes('压缩后应能重新命中')))
-dbSeen.close()
+// dbSeen.close() (共享 applyDir 实例，不单独关)
 
 // ── 压缩重注入（v0.21.0）：查阅留痕 / compaction/end 置待办 / buildReinjection ──
 const wsReinj = mkdtempSync(join(tmpdir(), 'mm-reinj-'))
-const dbReinj = new MemoryDb(memoryDbPath(wsReinj))
+const dbReinj = getDb('', applyDir)
 dbReinj.insert({ level: 'soul', content: '重注入测试 soul 条目' })
 dbReinj.insert({ level: 'user', content: '重注入测试 user 条目' })
 dbReinj.insert({ level: 'project', content: 'femwa 项目重注入全景条目', project: 'femwa', subcategory: 'overview' })
 const reinjProjectTool = tools.find((t) => t.name === 'memory_project')
 const reinjProjCtx = { agent: { session: { header: { cwd: wsReinj, id: 's-reinj' } } } }
 await reinjProjectTool.execute({ project: 'femwa' }, reinjProjCtx)
-check('memory_project records projectsQueried', JSON.stringify(readProjectQueried(wsReinj, 's-reinj', '.dsh-meow')) === JSON.stringify(['femwa']))
+check('memory_project records projectsQueried', JSON.stringify(readProjectQueried(wsReinj, 's-reinj', applyDir)) === JSON.stringify(['femwa']))
 await reinjProjectTool.execute({ project: '全局' }, reinjProjCtx)
-check('memory_project 全局 not recorded', JSON.stringify(readProjectQueried(wsReinj, 's-reinj', '.dsh-meow')) === JSON.stringify(['femwa']))
+check('memory_project 全局 not recorded', JSON.stringify(readProjectQueried(wsReinj, 's-reinj', applyDir)) === JSON.stringify(['femwa']))
 // markProjectQueried：多项目拆分 / 去重最近优先 / 上限淘汰 / 全局过滤
-markProjectQueried(wsReinj, 's-lru', 'x, y', '.dsh-meow')
-check('markProjectQueried splits multi-project param', JSON.stringify(readProjectQueried(wsReinj, 's-lru', '.dsh-meow')) === JSON.stringify(['x', 'y']))
-markProjectQueried(wsReinj, 's-lru2', 'a', '.dsh-meow')
-markProjectQueried(wsReinj, 's-lru2', 'b', '.dsh-meow')
-markProjectQueried(wsReinj, 's-lru2', '全局', '.dsh-meow')
-check('markProjectQueried skips 全局', JSON.stringify(readProjectQueried(wsReinj, 's-lru2', '.dsh-meow')) === JSON.stringify(['a', 'b']))
-markProjectQueried(wsReinj, 's-lru2', 'a', '.dsh-meow')
-check('markProjectQueried moves repeat to end', JSON.stringify(readProjectQueried(wsReinj, 's-lru2', '.dsh-meow')) === JSON.stringify(['b', 'a']))
-for (let i = 2; i <= 9; i++) markProjectQueried(wsReinj, 's-lru2', `p${i}`, '.dsh-meow')
-const lruList = readProjectQueried(wsReinj, 's-lru2', '.dsh-meow')
+markProjectQueried(wsReinj, 's-lru', 'x, y', applyDir)
+check('markProjectQueried splits multi-project param', JSON.stringify(readProjectQueried(wsReinj, 's-lru', applyDir)) === JSON.stringify(['x', 'y']))
+markProjectQueried(wsReinj, 's-lru2', 'a', applyDir)
+markProjectQueried(wsReinj, 's-lru2', 'b', applyDir)
+markProjectQueried(wsReinj, 's-lru2', '全局', applyDir)
+check('markProjectQueried skips 全局', JSON.stringify(readProjectQueried(wsReinj, 's-lru2', applyDir)) === JSON.stringify(['a', 'b']))
+markProjectQueried(wsReinj, 's-lru2', 'a', applyDir)
+check('markProjectQueried moves repeat to end', JSON.stringify(readProjectQueried(wsReinj, 's-lru2', applyDir)) === JSON.stringify(['b', 'a']))
+for (let i = 2; i <= 9; i++) markProjectQueried(wsReinj, 's-lru2', `p${i}`, applyDir)
+const lruList = readProjectQueried(wsReinj, 's-lru2', applyDir)
 check('markProjectQueried caps at MAX_REINJECT_PROJECTS', lruList.length === 8 && !lruList.includes('a') && !lruList.includes('b'))
 // buildReinjection：无可注入内容 → null（空库 + 项目全空）
 const wsReinjNull = mkdtempSync(join(tmpdir(), 'mm-reinj-null-'))
 const dbReinjNull = new MemoryDb(memoryDbPath(wsReinjNull))
-check('reinjection null when nothing to inject', buildReinjection(dbReinjNull, wsReinjNull, 's-x', ['nope'], {}, '.dsh-meow') === null)
-check('reinjection null with empty project list', buildReinjection(dbReinjNull, wsReinjNull, 's-x', [], {}, '.dsh-meow') === null)
+check('reinjection null when nothing to inject', buildReinjection(dbReinjNull, wsReinjNull, 's-x', ['nope'], {}, wsReinjNull) === null)
+check('reinjection null with empty project list', buildReinjection(dbReinjNull, wsReinjNull, 's-x', [], {}, wsReinjNull) === null)
 dbReinjNull.close()
 // compaction/end 成功（无 error）→ 置待办；releaseSeen 保留 projectsQueried/reinjectPending
 await handlers['session/event']({ id: 's-reinj', header: { cwd: wsReinj } }, { type: 'compaction/summary', time: Date.now() })
 await handlers['session/event']({ id: 's-reinj', header: { cwd: wsReinj } }, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'c1', turn: null } })
-check('compaction/end success arms reinjection', isReinjectPending(wsReinj, 's-reinj', '.dsh-meow') === true)
-check('releaseSeen keeps projectsQueried for reinjection', JSON.stringify(readProjectQueried(wsReinj, 's-reinj', '.dsh-meow')) === JSON.stringify(['femwa']))
+check('compaction/end success arms reinjection', isReinjectPending(wsReinj, 's-reinj', applyDir) === true)
+check('releaseSeen keeps projectsQueried for reinjection', JSON.stringify(readProjectQueried(wsReinj, 's-reinj', applyDir)) === JSON.stringify(['femwa']))
 await handlers['session/event']({ id: 's-reinj2', header: { cwd: wsReinj } }, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'c2', turn: null, error: 'provider failed' } })
-check('compaction/end with error does not arm', isReinjectPending(wsReinj, 's-reinj2', '.dsh-meow') === false)
+check('compaction/end with error does not arm', isReinjectPending(wsReinj, 's-reinj2', applyDir) === false)
 
 // ── 写痕迹（v0.23.0）：memory_remember/memory_update 落库记 written；LRU / releaseSeen 保留 ──
 const wsWritten = mkdtempSync(join(tmpdir(), 'mm-written-'))
-const dbWritten = new MemoryDb(memoryDbPath(wsWritten))
+const dbWritten = getDb('', applyDir)
 const rememberToolW = tools.find((t) => t.name === 'memory_remember')
 const updateToolW = tools.find((t) => t.name === 'memory_update')
 const writtenCtx = { agent: { session: { header: { cwd: wsWritten, id: 's-w' } } } }
 const r1 = await rememberToolW.execute({ content: '本会话新建的记忆条目', project: 'femwa', keywords: ['新建', '记忆', '测试', '压缩', '重注入', '回放', '痕迹', '条目'], importance: 1 }, writtenCtx)
-check('remember insert records written', readWritten(wsWritten, 's-w', '.dsh-meow').includes(r1.id))
+check('remember insert records written', readWritten(wsWritten, 's-w', applyDir).includes(r1.id))
 const r2 = await rememberToolW.execute({ content: '本会话新建的记忆条目', project: 'femwa', keywords: ['新建', '记忆', '测试', '压缩', '重注入', '回放', '痕迹', '条目'], importance: 2 }, writtenCtx)
-check('remember merge records written', r2.merged === true && r2.id === r1.id && readWritten(wsWritten, 's-w', '.dsh-meow').includes(r2.id))
+check('remember merge records written', r2.merged === true && r2.id === r1.id && readWritten(wsWritten, 's-w', applyDir).includes(r2.id))
 const r3 = await updateToolW.execute({ id: r1.id, importance: 3 }, writtenCtx)
-check('update success records written', r3.ok === true && readWritten(wsWritten, 's-w', '.dsh-meow').includes(r1.id))
+check('update success records written', r3.ok === true && readWritten(wsWritten, 's-w', applyDir).includes(r1.id))
 const r4 = await updateToolW.execute({ id: 'nonexistent-id-xxxx', importance: 1 }, writtenCtx)
-check('update not-found does not record', r4.ok === false && readWritten(wsWritten, 's-w', '.dsh-meow').length === 1)
+check('update not-found does not record', r4.ok === false && readWritten(wsWritten, 's-w', applyDir).length === 1)
 await updateToolW.execute({ id: r1.id, keywords: [] }, writtenCtx) // 空 patch = 不更新
-check('empty patch update does not change written', readWritten(wsWritten, 's-w', '.dsh-meow').length === 1)
-markWritten(wsWritten, 's-wlru', ['a', 'b'], '.dsh-meow')
-markWritten(wsWritten, 's-wlru', ['a'], '.dsh-meow')
-check('markWritten moves repeat to end', JSON.stringify(readWritten(wsWritten, 's-wlru', '.dsh-meow')) === JSON.stringify(['b', 'a']))
-for (let i = 0; i < MAX_REINJECT_WRITTEN + 3; i++) markWritten(wsWritten, 's-wlru2', [`w${i}`], '.dsh-meow')
-const wlru = readWritten(wsWritten, 's-wlru2', '.dsh-meow')
+check('empty patch update does not change written', readWritten(wsWritten, 's-w', applyDir).length === 1)
+markWritten(wsWritten, 's-wlru', ['a', 'b'], applyDir)
+markWritten(wsWritten, 's-wlru', ['a'], applyDir)
+check('markWritten moves repeat to end', JSON.stringify(readWritten(wsWritten, 's-wlru', applyDir)) === JSON.stringify(['b', 'a']))
+for (let i = 0; i < MAX_REINJECT_WRITTEN + 3; i++) markWritten(wsWritten, 's-wlru2', [`w${i}`], applyDir)
+const wlru = readWritten(wsWritten, 's-wlru2', applyDir)
 check('markWritten caps at MAX_REINJECT_WRITTEN', wlru.length === MAX_REINJECT_WRITTEN && !wlru.includes('w0') && wlru.includes(`w${MAX_REINJECT_WRITTEN + 2}`))
-markWritten(wsWritten, 's-wrel', ['keepme'], '.dsh-meow')
+markWritten(wsWritten, 's-wrel', ['keepme'], applyDir)
 await handlers['session/event']({ id: 's-wrel', header: { cwd: wsWritten } }, { type: 'compaction/summary', time: Date.now() })
-check('releaseSeen keeps written for reinjection', readWritten(wsWritten, 's-wrel', '.dsh-meow').includes('keepme'))
+check('releaseSeen keeps written for reinjection', readWritten(wsWritten, 's-wrel', applyDir).includes('keepme'))
 
 // 第三块构造：active 回放 / 归档跳过 / 快照与全景去重 / 按库最新数据 / db-only 并集
 const wsW3 = mkdtempSync(join(tmpdir(), 'mm-reinj-written-'))
@@ -967,9 +984,9 @@ const wArch = dbW3.insert({ level: 'fact', content: '本会话存了又归档的
 dbW3.update(wArch.level, wArch.id, { status: 'archived' })
 const wProj = dbW3.insert({ level: 'project', content: 'W3 全景里会出现的 project 条目', project: 'femwa', subcategory: 'overview' })
 const wFresh = dbW3.insert({ level: 'fact', content: '写入时的旧原文', source_session: 's-w3' })
-markWritten(wsW3, 's-w3', [wSelf.id, wOther.id, wArch.id, wProj.id, wSoul.id, wFresh.id], '.dsh-meow')
+markWritten(wsW3, 's-w3', [wSelf.id, wOther.id, wArch.id, wProj.id, wSoul.id, wFresh.id], wsW3)
 dbW3.update('fact', wFresh.id, { content: '更新后的最新原文' })
-const w3Reinj = buildReinjection(dbW3, wsW3, 's-w3', ['femwa'], {}, '.dsh-meow')
+const w3Reinj = buildReinjection(dbW3, wsW3, 's-w3', ['femwa'], {}, wsW3)
 const countOccurrences = (s, sub) => s.split(sub).length - 1
 check('reinjection includes written section', w3Reinj !== null && w3Reinj.text.includes('【本会话写过的记忆】'))
 check('written replays session-created entry', w3Reinj.text.includes('本会话自己存的 fact 原文'))
@@ -979,7 +996,7 @@ check('written skips archived', !w3Reinj.text.includes('本会话存了又归档
 check('written dedups against snapshot', countOccurrences(w3Reinj.text, 'W3 快照与本块重复的 soul 条目') === 1)
 check('written dedups against project panorama', countOccurrences(w3Reinj.text, 'W3 全景里会出现的 project 条目') === 1)
 const wDbOnly = dbW3.insert({ level: 'fact', content: '仅库痕迹的条目也能回放', source_session: 's-w3' }) // 不 markWritten
-const w3Reinj2 = buildReinjection(dbW3, wsW3, 's-w3', [], {}, '.dsh-meow')
+const w3Reinj2 = buildReinjection(dbW3, wsW3, 's-w3', [], {}, wsW3)
 check('written union covers db source_session entries', w3Reinj2 !== null && w3Reinj2.text.includes('仅库痕迹的条目也能回放'))
 dbW3.close()
 
@@ -992,27 +1009,27 @@ await evtHandler(sessWin, { type: 'turn/start', time: tPlugin })
 await evtHandler(sessWin, { type: 'user/message', time: tPlugin + 1, data: { source: { kind: 'plugin', plugin: 'meow-memory' }, content: [{ type: 'text', text: '[meow-memory-dream] x' }] } })
 await evtHandler(sessWin, { type: 'assistant/message', time: tPlugin + 2, data: { message: { content: [{ type: 'text', text: 'ok' }] } } })
 await evtHandler(sessWin, { type: 'turn/end', time: tPlugin + 3, data: { reason: { kind: 'completed' } } })
-check('plugin turn does not touch window', getDb(wsWin, '.dsh-meow').getWindow('s-win') === undefined)
+check('plugin turn does not touch window', getDb('', applyDir).getWindow('s-win') === undefined)
 // 用户消息正常刷新活跃度（新 turn 重置标记后）
 const tUser = Date.now() + 10_000
 await evtHandler(sessWin, { type: 'turn/start', time: tUser })
 await evtHandler(sessWin, { type: 'user/message', time: tUser + 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] } })
-check('user message touches window', getDb(wsWin, '.dsh-meow').getWindow('s-win')?.last_event_time === tUser + 1)
+check('user message touches window', getDb('', applyDir).getWindow('s-win')?.last_event_time === tUser + 1)
 
 // memory_project：项目完整注入段落（用户拍板规格：全量/分组/排序/已完成 5 条）
 const projectTool = tools.find((t) => t.name === 'memory_project')
 const projCtx = { agent: { session: { header: { cwd: ws, id: 't-proj' } } } }
 const t0 = Date.now()
-db.insert({ level: 'project', content: 'overview 旧条目', project: 'femwa', subcategory: 'overview', updated_at: t0 })
-db.insert({ level: 'project', content: 'overview 新条目', project: 'femwa', subcategory: 'overview', updated_at: t0 + 1000 })
-db.insert({ level: 'project', content: '决策条目', project: 'femwa', subcategory: 'decisions' })
-db.insert({ level: 'project', content: 'todo 进行中 A', project: 'femwa', subcategory: 'todo' })
-db.insert({ level: 'project', content: 'todo 进行中 B', project: 'femwa', subcategory: 'todo' })
-db.insert({ level: 'project', content: 'todo 无时间戳已完成', project: 'femwa', subcategory: 'todo', status: 'stale' })
+dbA.insert({ level: 'project', content: 'overview 旧条目', project: 'femwa', subcategory: 'overview', updated_at: t0 })
+dbA.insert({ level: 'project', content: 'overview 新条目', project: 'femwa', subcategory: 'overview', updated_at: t0 + 1000 })
+dbA.insert({ level: 'project', content: '决策条目', project: 'femwa', subcategory: 'decisions' })
+dbA.insert({ level: 'project', content: 'todo 进行中 A', project: 'femwa', subcategory: 'todo' })
+dbA.insert({ level: 'project', content: 'todo 进行中 B', project: 'femwa', subcategory: 'todo' })
+dbA.insert({ level: 'project', content: 'todo 无时间戳已完成', project: 'femwa', subcategory: 'todo', status: 'stale' })
 for (let i = 1; i <= 7; i++) {
-  db.insert({ level: 'project', content: `已完成事项 ${i}`, project: 'femwa', subcategory: 'todo', status: 'stale', updated_at: t0 + i * 1000 })
+  dbA.insert({ level: 'project', content: `已完成事项 ${i}`, project: 'femwa', subcategory: 'todo', status: 'stale', updated_at: t0 + i * 1000 })
 }
-db.insert({ level: 'project', content: '已归档条目', project: 'femwa', subcategory: 'overview', status: 'archived' })
+dbA.insert({ level: 'project', content: '已归档条目', project: 'femwa', subcategory: 'overview', status: 'archived' })
 const pj = await projectTool.execute({ project: 'femwa' }, projCtx)
 check('project 段落含项目名', pj.text.startsWith('【项目：femwa】'))
 check('project rows carry full id + absolute timestamp + content line', /\[femwa : project\] \[[a-z0-9]{9}-[a-z0-9]{26}\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} \[.+\]\noverview 旧条目/.test(pj.text))
@@ -1028,75 +1045,75 @@ const pjEmpty = await projectTool.execute({ project: 'nope' }, projCtx)
 check('project 空项目提示', pjEmpty.text.includes('暂无记忆条目'))
 
 // rules 层：全局高 importance 注入首轮、其余检索/项目段落
-db.insert({ level: 'rules', content: '全局铁律：绝不删除文件只标 archived', project: null, importance: 2 })
-db.insert({ level: 'rules', content: '全局琐碎规则走检索', project: null, importance: 1 })
-db.insert({ level: 'rules', content: '项目特定规则不全局注入', project: 'femwa', importance: 2 })
+dbA.insert({ level: 'rules', content: '全局铁律：绝不删除文件只标 archived', project: null, importance: 2 })
+dbA.insert({ level: 'rules', content: '全局琐碎规则走检索', project: null, importance: 1 })
+dbA.insert({ level: 'rules', content: '项目特定规则不全局注入', project: 'femwa', importance: 2 })
 db2.insert({ level: 'rules', content: '规则注入测试专用', project: null, importance: 2, created_at: Date.now() })
 db2.insert({ level: 'topic', content: '【起因】规则注入测试话题【经过】x【结果】y', title: '规则注入测试话题', project: 'meow-memory', created_at: Date.now() })
-const injR = buildInjection(db2, ws2, 'test-session-3', '规则注入测试', { hitTopK: 3 }, '.dsh-meow')
+const injR = buildInjection(db2, ws2, 'test-session-3', '规则注入测试', { hitTopK: 3 }, ws2)
 check('rules global high-importance injected', injR !== null && injR.text.includes('【设计原则】') && injR.text.includes('规则注入测试专用'))
 check('rules low-importance not injected', injR !== null && !injR.text.includes('全局琐碎规则走检索'))
 check('rules project-specific not injected globally', injR !== null && !injR.text.includes('项目特定规则不全局注入'))
 // 命中链路（第二轮起）覆盖 rules/topic：低 importance rules 等关键词命中
-setCurrentProject(ws2, 's-hit', 'meow-memory', '.dsh-meow')
-const hitR = buildHitInjection(db2, ws2, 's-hit', '规则注入测试', { hitTopK: 3 }, '.dsh-meow')
+setCurrentProject(ws2, 's-hit', 'meow-memory', ws2)
+const hitR = buildHitInjection(db2, ws2, 's-hit', '规则注入测试', { hitTopK: 3 }, ws2)
 check('keyword hit covers rules', hitR !== null && hitR.text.includes('规则注入测试专用'))
 check('keyword hit covers topic', hitR !== null && hitR.text.includes('规则注入测试话题'))
 
 // 当前 project 锚定：工具调用带 project → 状态更新；命中检索限定"全局+当前项目"
 const anchorCtx = { agent: { session: { header: { cwd: ws2, id: 's-anchor' } } } }
-check('no anchor before tools', getCurrentProject(ws2, 's-anchor', '.dsh-meow') === null)
+check('no anchor before tools', getCurrentProject(ws2, 's-anchor', applyDir) === null)
 const remAnc = await rememberTool.execute({ content: '锚定测试记忆', level: 'fact', project: 'femwa', keywords: ['锚定', '测试'], importance: 2 }, anchorCtx)
-check('remember anchors project', remAnc.ok === true && getCurrentProject(ws2, 's-anchor', '.dsh-meow') === 'femwa')
+check('remember anchors project', remAnc.ok === true && getCurrentProject(ws2, 's-anchor', applyDir) === 'femwa')
 await searchTool.execute({ query: '锚定', project: 'meow-memory' }, anchorCtx)
-check('search re-anchors project', getCurrentProject(ws2, 's-anchor', '.dsh-meow') === 'meow-memory')
+check('search re-anchors project', getCurrentProject(ws2, 's-anchor', applyDir) === 'meow-memory')
 await projectTool.execute({ project: 'dsh' }, anchorCtx)
-check('memory_project anchors project', getCurrentProject(ws2, 's-anchor', '.dsh-meow') === 'dsh')
+check('memory_project anchors project', getCurrentProject(ws2, 's-anchor', applyDir) === 'dsh')
 // 锚定后命中：全局 + 当前项目；未锚定只全局（命中链路）
 await projectTool.execute({ project: 'femwa' }, anchorCtx)
 db2.insert({ level: 'fact', content: 'femwa 专有命中词', project: 'femwa', created_at: Date.now() })
-const hitAnc = buildHitInjection(db2, ws2, 's-anchor', 'femwa 专有命中词', { hitTopK: 3 }, '.dsh-meow')
+const hitAnc = buildHitInjection(db2, ws2, 's-anchor', 'femwa 专有命中词', { hitTopK: 3 }, applyDir)
 check('anchored hit includes current project', hitAnc !== null && hitAnc.text.includes('femwa 专有命中词'))
-const hitNoAnc = buildHitInjection(db2, ws2, 's-no-anchor', 'femwa 专有命中词', { hitTopK: 3 }, '.dsh-meow')
+const hitNoAnc = buildHitInjection(db2, ws2, 's-no-anchor', 'femwa 专有命中词', { hitTopK: 3 }, applyDir)
 check('unanchored hit excludes project-only', hitNoAnc === null || !hitNoAnc.text.includes('femwa 专有命中词'))
 
 // 命中基于 keywords 而非全文：content 含词但 keywords 不含 → 不命中（防噪音）
 const noiseId = db2.insert({ level: 'fact', content: '这段话的全文里出现了测试两个字但关键词是别的', project: null }).id
 db2.update('fact', noiseId, { keywords: ['别的', '无关'] })
-const hitNoise = buildHitInjection(db2, ws2, 's-noise', '测试', { hitTopK: 3 }, '.dsh-meow')
+const hitNoise = buildHitInjection(db2, ws2, 's-noise', '测试', { hitTopK: 3 }, ws2)
 check('hit uses keywords not full text', hitNoise === null || !hitNoise.text.includes('这段话的全文里出现了测试两个字'))
-const hitKw = buildHitInjection(db2, ws2, 's-kw', '别的无关', { hitTopK: 3 }, '.dsh-meow')
+const hitKw = buildHitInjection(db2, ws2, 's-kw', '别的无关', { hitTopK: 3 }, ws2)
 check('hit matches keywords', hitKw !== null && hitKw.text.includes('这段话的全文里出现了测试两个字'))
 // 命中打分：LLM 关键词（多字词 bigram 化）可命中；虚词不产生命中
 db2.insert({ level: 'fact', content: 'LLM 关键词测试条目', project: null, keywords: ['记忆插件', '命中链路', '打分函数'] })
-const hitLlm = buildHitInjection(db2, ws2, 's-llm', '记忆插件命中', { hitTopK: 3 }, '.dsh-meow')
+const hitLlm = buildHitInjection(db2, ws2, 's-llm', '记忆插件命中', { hitTopK: 3 }, ws2)
 check('hit matches llm keywords', hitLlm !== null && hitLlm.text.includes('LLM 关键词测试条目'))
-const hitVoid = buildHitInjection(db2, ws2, 's-void', '好的谢谢', { hitTopK: 3 }, '.dsh-meow')
+const hitVoid = buildHitInjection(db2, ws2, 's-void', '好的谢谢', { hitTopK: 3 }, ws2)
 check('void words produce no hit', hitVoid === null || !hitVoid.text.includes('LLM 关键词测试条目'))
 // importance 权重：3 星优先于 1 星（同关键词）
 const impLow = db2.insert({ level: 'fact', content: '低重要度条目', project: null, importance: 1, keywords: ['权重对比'] }).id
 const impHigh = db2.insert({ level: 'fact', content: '高重要度条目', project: null, importance: 3, keywords: ['权重对比'] }).id
-const hitImp = buildHitInjection(db2, ws2, 's-imp', '权重对比', { hitTopK: 3 }, '.dsh-meow')
+const hitImp = buildHitInjection(db2, ws2, 's-imp', '权重对比', { hitTopK: 3 }, ws2)
 check('importance boosts score', hitImp !== null && hitImp.text.indexOf('高重要度条目') < hitImp.text.indexOf('低重要度条目'))
 db2.update('fact', impLow, { status: 'archived' })
 db2.update('fact', impHigh, { status: 'archived' })
 // 覆盖率：多关键词条目靠单词碰瓷分低（被少关键词条目压过）
 db2.insert({ level: 'fact', content: '单词聚焦条目', project: null, keywords: ['唯一词'] })
-const hitCover = buildHitInjection(db2, ws2, 's-cover', '唯一词', { hitTopK: 3 }, '.dsh-meow')
+const hitCover = buildHitInjection(db2, ws2, 's-cover', '唯一词', { hitTopK: 3 }, ws2)
 check('coverage favors focused entry', hitCover !== null && hitCover.text.includes('单词聚焦条目') && !hitCover.text.includes('LLM 关键词测试条目'))
 // 不检索本 session 建立的记忆（它们在上下文里，无需命中）
 const selfId = db2.insert({ level: 'fact', content: '本窗口刚写的独有命中词', project: null, source_session: 's-self' }).id
-const hitSelf = buildHitInjection(db2, ws2, 's-self', '独有命中词', { hitTopK: 3 }, '.dsh-meow')
+const hitSelf = buildHitInjection(db2, ws2, 's-self', '独有命中词', { hitTopK: 3 }, ws2)
 check('hit excludes own-session memory', hitSelf === null || !hitSelf.text.includes('本窗口刚写的独有命中词'))
 db2.update('fact', selfId, { status: 'archived' })
 // 命中条目带记忆时间戳（updated_at 相对时间）
 const datedId = db2.insert({ level: 'fact', content: '带时间戳的命中条目', project: null, updated_at: Date.now() - 2 * 86_400_000 }).id
-const hitDated = buildHitInjection(db2, ws2, 's-dated', '时间戳命中', { hitTopK: 3 }, '.dsh-meow')
+const hitDated = buildHitInjection(db2, ws2, 's-dated', '时间戳命中', { hitTopK: 3 }, ws2)
 check('hit shows unmarked prefix + full id + absolute/relative timestamps', hitDated !== null && hitDated.text.includes('[未标记 : fact]') && hitDated.text.includes('2 天前') && /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(hitDated.text))
 db2.update('fact', datedId, { status: 'archived' })
 const searchRules = await searchTool.execute({ query: '全局铁律' }, projCtx)
 check('search default scope includes rules', searchRules.hits.some((h) => h.content.includes('全局铁律')))
-db.insert({ level: 'rules', content: 'femwa 设计铁律：语法错误必须报错', project: 'femwa', importance: 2 })
+dbA.insert({ level: 'rules', content: 'femwa 设计铁律：语法错误必须报错', project: 'femwa', importance: 2 })
 const pjRules = await projectTool.execute({ project: 'femwa' }, projCtx)
 check('project rules injected in paragraph', pjRules.text.includes('设计原则') && pjRules.text.includes('语法错误必须报错'))
 
@@ -1104,7 +1121,7 @@ check('project rules injected in paragraph', pjRules.text.includes('设计原则
 const guideCtx = makeCtx()
 const sections = []
 guideCtx.ctx.get = (name) => (name === 'systemPrompt' ? { section: (s) => sections.push(s) } : undefined)
-await apply(guideCtx.ctx, { enabled: true, projectDir: '.dsh-meow', promptLang: 'zh' })
+await apply(guideCtx.ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh' })
 check('guide section registered', sections.length === 1 && sections[0].name === 'meow-memory:guide' &&
   sections[0].order === 130 && sections[0].text === getMemoryGuide(), `got ${JSON.stringify(sections)}`)
 check('guide covers all seven tools', ['memory_remember', 'memory_search', 'memory_find_similar', 'memory_read', 'memory_update', 'memory_dream', 'memory_project']
@@ -1221,7 +1238,7 @@ check('snapshot is inserted before first user despite leading plugin notice',
 
 // 恢复会话（进程重启后，日志已有历史用户消息）：快照不重复注入，命中链路照跑（第 N 条消息）
 const resumeAgent = { session: { header: { cwd: ws, id: 'apply-session-resume' }, events: [events.userMsg('之前')] }, steer: () => {} }
-setCurrentProject(ws, 'apply-session-resume', 'dsh', '.dsh-meow')
+setCurrentProject(ws, 'apply-session-resume', 'dsh', ws)
 const resumeMsg = { content: [{ type: 'text', text: '测试关键词' }], source: { kind: 'user' } }
 const decisionResume = await preStep(
   { agent: resumeAgent, messages: [resumeMsg], turn: 2, step: 1, signal: new AbortController().signal },
@@ -1236,7 +1253,7 @@ check('resumed session skips first snapshot, hit chain inserts independent snaps
 // alpha.4 形态（Session.events 属性移除，ownEvents() 函数提供事件流）：
 // 恢复会话的快照不重复注入、命中链路照跑——与 events 数组形态行为一致。
 const alphaAgent = { session: { header: { cwd: ws, id: 'apply-session-alpha4' }, ownEvents: () => [events.userMsg('之前')] }, steer: () => {} }
-setCurrentProject(ws, 'apply-session-alpha4', 'dsh', '.dsh-meow')
+setCurrentProject(ws, 'apply-session-alpha4', 'dsh', ws)
 const alphaMsg = { content: [{ type: 'text', text: '测试关键词' }], source: { kind: 'user' } }
 const decisionAlpha = await preStep(
   { agent: alphaAgent, messages: [alphaMsg], turn: 2, step: 1, signal: new AbortController().signal },
@@ -1263,7 +1280,7 @@ check('no re-injection on second pre-step', decisionA2.messages[0].content.lengt
   decisionA2.messages[0].content[0].text === '第二条消息')
 
 // 命中链路（独立于首轮注入）：每条用户消息都检索命中（top-K），seen 去重
-setCurrentProject(ws, 'apply-session-1', 'dsh', '.dsh-meow')
+setCurrentProject(ws, 'apply-session-1', 'dsh', applyDir)
 const agentA3 = { session: { header: { cwd: ws, id: 'apply-session-1' }, events: [] }, steer: () => {} }
 const decisionA3 = await preStep(
   { agent: agentA3, messages: [{ content: [{ type: 'text', text: '测试关键词' }], source: { kind: 'user' } }], turn: 3, step: 1, signal: new AbortController().signal },
@@ -1305,8 +1322,8 @@ check('post-compaction reinjection injects snapshot + projects', dReinj.kind ===
   dReinj.messages[1] === reinjMsg && dReinj.messages[1].content[0].text === '压缩后的第一条消息')
 check('reinjection preserves user text', dReinj.messages[1].content[0].text === '压缩后的第一条消息')
 check('reinjection does not run hit chain', !dReinj.messages[0].content[0].text.includes('可能相关的记忆，仅供参考：'))
-check('reinjection clears pending', isReinjectPending(wsReinj, 's-reinj', '.dsh-meow') === false)
-check('reinjection re-marks snapshot ids as injected', readSeen(wsReinj, 's-reinj', '.dsh-meow').size >= 2)
+check('reinjection clears pending', isReinjectPending(wsReinj, 's-reinj', applyDir) === false)
+check('reinjection re-marks snapshot ids as injected', readSeen(wsReinj, 's-reinj', applyDir).size >= 2)
 // 下一轮恢复正常：无重复重注入，命中链路照跑（库内无 fact/lesson → 无命中、无注入）
 const dReinj2 = await preStep(
   { agent: reinjAgent, messages: [{ content: [{ type: 'text', text: '压缩后的第二条消息' }], source: { kind: 'user' } }], turn: 10, step: 1, signal: new AbortController().signal },
@@ -1320,7 +1337,7 @@ const dToolPending = await preStep(
   { agent: reinjAgent3, messages: [{ content: [{ type: 'tool-call', id: 'c2', name: 'x', arguments: '{}' }], source: { kind: 'assistant' } }], turn: 2, step: 2, signal: new AbortController().signal },
   async () => ({ kind: 'enter', messages: [{ content: [{ type: 'tool-call', id: 'c2', name: 'x', arguments: '{}' }], source: { kind: 'assistant' } }] }),
 )
-check('pending kept on tool-only step, no injection', dToolPending.messages[0].content.length === 1 && isReinjectPending(wsReinj, 's-reinj3', '.dsh-meow') === true)
+check('pending kept on tool-only step, no injection', dToolPending.messages[0].content.length === 1 && isReinjectPending(wsReinj, 's-reinj3', applyDir) === true)
 // 子代理不参与压缩重注入
 await handlers['session/event']({ id: 's-reinj4', header: { cwd: wsReinj } }, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'c4', turn: null } })
 const reinjAgentSub = { session: { header: { cwd: wsReinj, id: 's-reinj4', origin: 'subagent' }, events: [] }, steer: () => {} }
@@ -1328,7 +1345,7 @@ const dSubPending = await preStep(
   { agent: reinjAgentSub, messages: [{ content: [{ type: 'text', text: '子代理消息' }], source: { kind: 'user' } }], turn: 1, step: 1, signal: new AbortController().signal },
   async () => ({ kind: 'enter', messages: [{ content: [{ type: 'text', text: '子代理消息' }], source: { kind: 'user' } }] }),
 )
-check('no reinjection for subagent, pending kept', dSubPending.messages[0].content.length === 1 && isReinjectPending(wsReinj, 's-reinj4', '.dsh-meow') === true)
+check('no reinjection for subagent, pending kept', dSubPending.messages[0].content.length === 1 && isReinjectPending(wsReinj, 's-reinj4', applyDir) === true)
 // 第三块 apply 级：pending + 本会话写过的记忆 → 注入含【本会话写过的记忆】段；written id 记入 injected
 await handlers['session/event']({ id: 's-reinj5', header: { cwd: wsReinj } }, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'c5', turn: null } })
 const reinjRemember = tools.find((t) => t.name === 'memory_remember')
@@ -1342,14 +1359,15 @@ const dReinj5 = await preStep(
 check('reinjection includes written section (apply)', dReinj5.kind === 'enter' &&
   dReinj5.messages[0].content[0].text.includes('【本会话写过的记忆】') &&
   dReinj5.messages[0].content[0].text.includes('压缩前本会话写入的记忆'))
-check('written ids re-marked as injected (apply)', readSeen(wsReinj, 's-reinj5', '.dsh-meow').has(rReinj5.id))
-dbReinj.close()
+check('written ids re-marked as injected (apply)', readSeen(wsReinj, 's-reinj5', applyDir).has(rReinj5.id))
+// dbReinj.close() (共享 applyDir 实例，不单独关)
 
 // 首次设置引导（v0.19.0）：promptLang 未配置 → 插件生效后第一条真实用户消息注入
 // 设置任务；seen（accessed '__welcomeGuide__'）记账 → 同会话不重复；显式配置 → 永久短路。
 const wsGuide = mkdtempSync(join(tmpdir(), 'mm-guide-'))
 const { ctx: guideApplyCtx, handlers: guideHandlers } = makeCtx()
-await apply(guideApplyCtx, { enabled: true, projectDir: '.dsh-meow' }) // 不传 promptLang = 未配置
+await apply(guideApplyCtx, { enabled: true, projectDir: applyDir }) // 不传 promptLang = 未配置
+  try { getDb('', applyDir).rawExec('SELECT 1'); console.log('DBG p1: open OK') } catch (e) { console.log('DBG p1: NOT OPEN', e.message) }
 const guidePreStep = guideHandlers['agent/pre-step']
 const guideAgent = { session: { header: { cwd: wsGuide, id: 'guide-session-1' }, events: [events.userMsg('更早的话')] }, steer: () => {} }
 const guideMsg = { content: [{ type: 'text', text: '继续' }], source: { kind: 'user' } }
@@ -1368,14 +1386,15 @@ check('welcome guide injected as independent notice when promptLang unset', dGui
   dGuide1.messages[0].content[0].text.includes('不要以 system prompt') &&
   dGuide1.messages[0].content[0].text.includes('promptLang') &&
   dGuide1.messages[1] === guideMsg && dGuide1.messages[1].content[0].text === '继续')
-check('welcome guide recorded via accessed pseudo-id', readSeen(wsGuide, 'guide-session-1', '.dsh-meow').has('__welcomeGuide__'))
+check('welcome guide recorded via accessed pseudo-id', readSeen(wsGuide, 'guide-session-1', applyDir).has('__welcomeGuide__'))
 const dGuide2 = await guidePreStep(
   { agent: guideAgent, messages: [{ content: [{ type: 'text', text: '再继续' }], source: { kind: 'user' } }], turn: 3, step: 1, signal: new AbortController().signal },
   async () => ({ kind: 'enter', messages: [{ content: [{ type: 'text', text: '再继续' }], source: { kind: 'user' } }] }),
 )
 check('welcome guide not re-injected same session', dGuide2.messages[0].content.length === 1)
 const { ctx: zhSetCtx, handlers: zhSetHandlers } = makeCtx()
-await apply(zhSetCtx, { enabled: true, projectDir: '.dsh-meow', promptLang: 'zh' })
+await apply(zhSetCtx, { enabled: true, projectDir: applyDir, promptLang: 'zh' })
+  try { getDb('', applyDir).rawExec('SELECT 1'); console.log('DBG p2: open OK') } catch (e) { console.log('DBG p2: NOT OPEN', e.message) }
 const zhAgent = { session: { header: { cwd: wsGuide, id: 'zh-set-session' }, events: [events.userMsg('x')] }, steer: () => {} }
 const zhMsg = { content: [{ type: 'text', text: 'y' }], source: { kind: 'user' } }
 const dZhSet = await zhSetHandlers['agent/pre-step'](
@@ -1515,7 +1534,7 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
 {
   const calls = []
   const d = makeCtx({ start: (name, req) => { calls.push({ name, req }); return { id: 'c', result: Promise.resolve({ stopReason: 'completed', output: [] }), dispose: async () => {} } } })
-  await apply(d.ctx, { enabled: true, projectDir: '.dsh-meow', promptLang: 'zh', delegate: { model: 'prov/main' } })
+  await apply(d.ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh', delegate: { model: 'prov/main' } })
   const dSteered = []
   d.handlers['agent/turn-stopping']({ agent: { session: { header: { cwd: ws, id: 's-steer-always' }, events: sevenSteps }, steer: (m) => dSteered.push(m) } }, { turn: 1, signal: new AbortController().signal })
   check('reflect: always steered even with model configured', dSteered.length === 1 && dSteered[0].content.some((b) => b.type === 'text' && b.text.includes('记忆反思')))
@@ -1525,7 +1544,7 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
 // 换模型（v0.24）：agent/request waterfall 在反思/梦境轮覆盖 provider/model，其余请求放行
 {
   const d = makeCtx()
-  await apply(d.ctx, { enabled: true, projectDir: '.dsh-meow', promptLang: 'zh', delegate: { model: 'prov/main' } })
+  await apply(d.ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh', delegate: { model: 'prov/main' } })
   const reqHandler = d.handlers['agent/request']
   check('model override: agent/request waterfall registered when model set', typeof reqHandler === 'function')
   const seed = async () => ({ provider: 'base', model: 'base-model' })
@@ -1548,7 +1567,7 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
   check('model override: subagent request untouched', out5.provider === 'base' && out5.model === 'base-model')
   // 未配置模型 → 完全不注册 waterfall（零开销路径）
   const d2 = makeCtx()
-  await apply(d2.ctx, { enabled: true, projectDir: '.dsh-meow', promptLang: 'zh' })
+  await apply(d2.ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh' })
   check('model override: no model → no waterfall registered', d2.handlers['agent/request'] === undefined)
 }
 
@@ -1564,13 +1583,12 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
 
 // 定义形状 + handler 全路径。语义=手动触发：直接 startWindowDream，不吃峰时抑制/空闲检查。
 {
-  const def = dreamCommandDefinition({ logger: { info: () => {}, warn: () => {}, error: () => {} } }, '.dsh-meow')
-  check('/dream command shape', def.name === 'dream' && typeof def.description === 'string' && def.description.length > 0)
-
   // 成功路径：本窗口有记忆 → steer 发出第 1 组 + 租约建立 + success 文案
   const wsCmd = mkdtempSync(join(tmpdir(), 'mm-cmd-'))
-  const dbCmd = getDb(wsCmd, '.dsh-meow')
+  const dbCmd = getDb(wsCmd, wsCmd)
   dbCmd.insert({ level: 'fact', content: '/dream 命令测试条目 特异词zz', project: 'dsh', source_session: 's-cmd' })
+  const def = dreamCommandDefinition({ logger: { info: () => {}, warn: () => {}, error: () => {} } }, wsCmd)
+  check('/dream command shape', def.name === 'dream' && typeof def.description === 'string' && def.description.length > 0)
   const steeredC = []
   const agentC = { session: { header: { cwd: wsCmd, id: 's-cmd' } }, steer: (m) => steeredC.push(m) }
   const r1 = await def.handler({ agent: agentC })
@@ -1581,17 +1599,17 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
   const r2 = await def.handler({ agent: agentC })
   check('/dream busy → error', r2.kind === 'error' && r2.text.includes('进行中'), JSON.stringify(r2))
   check('/dream busy no extra steer', steeredC.length === 1)
-  abortDream(agentC, '.dsh-meow')
+  abortDream(agentC, wsCmd)
 
   // 空窗口：topic 轮恒触发（回顾建新）→ 也成功启动（与 memory_dream 工具行为一致）
   const wsEmpty = mkdtempSync(join(tmpdir(), 'mm-cmd-empty-'))
-  const dbEmpty = getDb(wsEmpty, '.dsh-meow')
+  const dbEmpty = getDb(wsEmpty, wsEmpty)
   dbEmpty.touchWindow('s-empty', wsEmpty, Date.now())
   const steeredE = []
   const agentE2 = { session: { header: { cwd: wsEmpty, id: 's-empty' } }, steer: (m) => steeredE.push(m) }
   const rNone = await def.handler({ agent: agentE2 })
   check('/dream empty window still starts (topic round)', rNone.kind === 'success' && steeredE.length === 1, JSON.stringify(rNone))
-  abortDream(agentE2, '.dsh-meow')
+  abortDream(agentE2, wsEmpty)
 
   // 守卫：子代理会话拒绝
   const rSub = await def.handler({ agent: { session: { header: { cwd: wsCmd, id: 's-sub', origin: 'subagent', parentSession: 's-cmd' } } } })
@@ -1606,8 +1624,8 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
   const rNoAgent = await def.handler({})
   check('/dream requires agent', rNoAgent.kind === 'error', JSON.stringify(rNoAgent))
 
-  getDb(wsCmd, '.dsh-meow').close() // 显式关库：Windows 下 WAL 句柄未释放会挡住 rmSync（EBUSY）
-  getDb(wsEmpty, '.dsh-meow').close()
+  getDb(wsCmd, wsCmd).close() // 显式关库：Windows 下 WAL 句柄未释放会挡住 rmSync（EBUSY）
+  getDb(wsEmpty, wsEmpty).close()
   rmSync(wsCmd, { recursive: true, force: true })
   rmSync(wsEmpty, { recursive: true, force: true })
 }
@@ -1616,6 +1634,7 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
 {
   const registeredC = []
   const disposers = []
+  const ctxCmdDir = mkdtempSync(join(tmpdir(), 'mm-cmd-')) // 隔离目录：避免默认 projectDir 落到真实 homedir 中央库
   const { ctx: ctxCmd } = makeCtx()
   ctxCmd.get = (name) => name === 'commands'
     ? { register: (def) => { registeredC.push(def); return () => {} } }
@@ -1625,21 +1644,24 @@ check('parseModelSpec blank → undefined', parseModelSpec('') === undefined && 
     if (typeof d === 'function') disposers.push(d)
     return d
   }
-  await apply(ctxCmd, { enabled: true })
+  await apply(ctxCmd, { enabled: true, projectDir: ctxCmdDir })
   check('/dream auto-registered via commands service', registeredC.length === 1 && registeredC[0].name === 'dream',
     JSON.stringify(registeredC.map((d) => d.name)))
+  rmSync(ctxCmdDir, { recursive: true, force: true })
 }
 
 
 // disabled
+const ctxOffDir = mkdtempSync(join(tmpdir(), 'mm-off-'))
 const { ctx: ctxOff, tools: toolsOff, handlers: handlersOff } = makeCtx()
-await apply(ctxOff, { enabled: false })
+await apply(ctxOff, { enabled: false, projectDir: ctxOffDir })
 check('disabled registers nothing', toolsOff.length === 0 && Object.keys(handlersOff).length === 0)
+rmSync(ctxOffDir, { recursive: true, force: true })
 
 // ═══════════════════ 会话级记忆开关（v0.28.0） ═══════════════════
 {
   const wsS = mkdtempSync(join(tmpdir(), 'mm-sess-toggle-'))
-  const dbS = getDb(wsS, '.dsh-meow')
+  const dbS = getDb(wsS, wsS)
 
   // ── db 层：无记录=启用；禁用→启用 往返 ──
   check('session_state default enabled (no record)', dbS.getSessionMemoryEnabled('win-none') === true)
@@ -1652,36 +1674,36 @@ check('disabled registers nothing', toolsOff.length === 0 && Object.keys(handler
 
   // ── session-state 缓存层：读库默认 / 写后立即可见 / reset 回库 ──
   resetSessionMemoryCache()
-  check('session-state cache reads db default', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === true)
-  setSessionMemoryEnabled(wsS, 'win-b', false, '.dsh-meow')
-  check('session-state cache reflects set', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === false)
+  check('session-state cache reads db default', isSessionMemoryEnabled(wsS, 'win-b', wsS) === true)
+  setSessionMemoryEnabled(wsS, 'win-b', false, wsS)
+  check('session-state cache reflects set', isSessionMemoryEnabled(wsS, 'win-b', wsS) === false)
   dbS.setSessionMemoryEnabled('win-b', true) // 模拟跨实例直改库
-  check('session-state cache stale within TTL', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === false)
+  check('session-state cache stale within TTL', isSessionMemoryEnabled(wsS, 'win-b', wsS) === false)
   resetSessionMemoryCache()
-  check('session-state reset reloads db', isSessionMemoryEnabled(wsS, 'win-b', '.dsh-meow') === true)
+  check('session-state reset reloads db', isSessionMemoryEnabled(wsS, 'win-b', wsS) === true)
 
   // ── 工具门禁：禁用会话调 memory_search 抛错；恢复后可用 ──
   const gateSearch = tools.find((t) => t.name === 'memory_search')
   const gateExec = { agent: { session: { header: { cwd: wsS, id: 'win-c' } } } }
-  setSessionMemoryEnabled(wsS, 'win-c', false, '.dsh-meow')
+  setSessionMemoryEnabled(wsS, 'win-c', false, wsS)
   let gateErr = null
   try { await gateSearch.execute({ query: '随便' }, gateExec) } catch (e) { gateErr = e }
   check('memory_search throws when session disabled', gateErr !== null && String(gateErr.message).includes('记忆已禁用'), String(gateErr?.message))
-  setSessionMemoryEnabled(wsS, 'win-c', true, '.dsh-meow')
+  setSessionMemoryEnabled(wsS, 'win-c', true, wsS)
   const gateOk = await gateSearch.execute({ query: '随便' }, gateExec)
   check('memory_search works after re-enable', gateOk.hits !== undefined)
 
   // ── 子代理继承：父会话禁用 → 子代理调工具同样被拦（sessionIdOf 归父窗口） ──
   const subGateExec = { agent: { session: { header: { cwd: wsS, id: 'win-c-child', parentSession: 'win-c', origin: 'subagent' } } } }
-  setSessionMemoryEnabled(wsS, 'win-c', false, '.dsh-meow')
+  setSessionMemoryEnabled(wsS, 'win-c', false, wsS)
   let subErr = null
   try { await gateSearch.execute({ query: '随便' }, subGateExec) } catch (e) { subErr = e }
   check('subagent inherits parent disabled', subErr !== null && String(subErr.message).includes('记忆已禁用'))
-  setSessionMemoryEnabled(wsS, 'win-c', true, '.dsh-meow')
+  setSessionMemoryEnabled(wsS, 'win-c', true, wsS)
 
   // ── dream 自动扫描门禁：禁用会话跳过（不启动）；恢复后照常 ──
   const wsD2 = mkdtempSync(join(tmpdir(), 'mm-sess-dream-'))
-  const dbD2 = getDb(wsD2, '.dsh-meow')
+  const dbD2 = getDb(wsD2, wsD2)
   dbD2.touchWindow('win-e', wsD2, Date.now() - 4 * 3600_000) // 4h 前活动：满足 idle（180m）与 24h 内
   dbD2.setSessionMemoryEnabled('win-e', false)
   const sweepCfg = { enabled: true, idleMinutes: 180, suppressWindows: [], suppressLeadMinutes: 0, checkMinutes: 1, timeZone: 'Asia/Shanghai', rulesReviewDays: 2 }
@@ -1692,20 +1714,20 @@ check('disabled registers nothing', toolsOff.length === 0 && Object.keys(handler
     get: (name) => name === 'agents' ? { get: () => sweepAgent } : undefined,
   }
   resetSessionMemoryCache()
-  dreamSweepOnce(sweepCtx, sweepCfg, '.dsh-meow', new Map([['win-e', wsD2]]), () => { dreamStarts++ })
+  dreamSweepOnce(sweepCtx, sweepCfg, wsD2, new Map([['win-e', wsD2]]), () => { dreamStarts++ })
   check('dream sweep skips disabled session', dbD2.getDreamLease('win-e') === null && dreamStarts === 0)
   dbD2.setSessionMemoryEnabled('win-e', true)
   resetSessionMemoryCache()
-  dreamSweepOnce(sweepCtx, sweepCfg, '.dsh-meow', new Map([['win-e', wsD2]]), () => { dreamStarts++ })
+  dreamSweepOnce(sweepCtx, sweepCfg, wsD2, new Map([['win-e', wsD2]]), () => { dreamStarts++ })
   check('dream sweep dreams enabled session', dreamStarts > 0)
   dbD2.finishDream('win-e', Date.now()) // 清理：收尾不留悬挂租约
 
   // ── memory_dream 工具 / /dream 命令门禁：禁用会话返回明确提示 ──
   const gateDreamTool = tools.find((t) => t.name === 'memory_dream')
-  setSessionMemoryEnabled(wsS, 'win-f', false, '.dsh-meow')
+  setSessionMemoryEnabled(wsS, 'win-f', false, wsS)
   const rDreamTool = await gateDreamTool.execute({}, { agent: { session: { header: { cwd: wsS, id: 'win-f' } } } })
   check('memory_dream tool blocked when disabled', rDreamTool.ok === false && String(rDreamTool.note).includes('记忆已禁用'), JSON.stringify(rDreamTool))
-  const cmdDef = dreamCommandDefinition(sweepCtx, '.dsh-meow')
+  const cmdDef = dreamCommandDefinition(sweepCtx, wsS)
   const rCmd = await cmdDef.handler({ agent: { session: { header: { cwd: wsS, id: 'win-f' } } } })
   check('/dream command blocked when disabled', rCmd.kind === 'error' && rCmd.text.includes('记忆已禁用'), JSON.stringify(rCmd))
 
@@ -1713,6 +1735,61 @@ check('disabled registers nothing', toolsOff.length === 0 && Object.keys(handler
   dbD2.close()
   rmSync(wsS, { recursive: true, force: true })
   rmSync(wsD2, { recursive: true, force: true })
+}
+
+// ═══ v3 中央存储一次性迁移（2026-09-14 拍板：搬家式，单库多项目） ═══
+{
+  const mRoot = mkdtempSync(join(tmpdir(), 'mm-central-'))
+  const central = join(mRoot, 'central') // 中央库目录（绝对路径，测试隔离）
+  mkdirSync(central, { recursive: true })
+  const w1 = join(mRoot, 'w1')
+  const w2 = join(mRoot, 'w2')
+  const w3 = join(mRoot, 'w3')
+  for (const w of [w1, w2, w3]) mkdirSync(join(w, '.dsh-meow', 'sessions'), { recursive: true })
+
+  // w1：单项目 dsh → user/soul 应推断为 dsh
+  const d1 = new MemoryDb(memoryDbPath(w1))
+  const u1 = d1.insert({ level: 'user', content: 'w1 的用户条目', project: null, created_at: 111 })
+  d1.insert({ level: 'project', content: 'w1 的项目', project: 'dsh', subcategory: 'overview', created_at: 100 })
+  d1.insert({ level: 'fact', content: 'w1 的事实', project: 'dsh', created_at: 110 })
+  d1.insert({ level: 'soul', content: 'w1 的 soul', project: null, created_at: 112 })
+  d1.touchWindow('win-w1', w1, 500)
+  writeFileSync(join(w1, '.dsh-meow', 'sessions', 's-w1.json'), JSON.stringify({ injected: ['x'], searched: [], accessed: [], written: [] }), 'utf8')
+  d1.close()
+  // w2：多项目 femwa+meow-memory → user/soul 全局（null）
+  const d2 = new MemoryDb(memoryDbPath(w2))
+  d2.insert({ level: 'user', content: 'w2 的用户条目', project: null, created_at: 211 })
+  d2.insert({ level: 'project', content: 'w2 项目A', project: 'femwa', subcategory: 'overview', created_at: 200 })
+  d2.insert({ level: 'project', content: 'w2 项目B', project: 'meow-memory', subcategory: 'decisions', created_at: 210 })
+  d2.insert({ level: 'lesson', content: 'w2 的教训', project: 'femwa', created_at: 212 })
+  d2.close()
+  // w3：无 project 层 → user 全局
+  const d3 = new MemoryDb(memoryDbPath(w3))
+  d3.insert({ level: 'user', content: 'w3 的用户条目', project: null, created_at: 311 })
+  d3.insert({ level: 'fact', content: 'w3 的事实（未标记）', project: null, created_at: 310 })
+  d3.close()
+
+  const n = migrateToCentral([w1, w2, w3], central, '.dsh-meow')
+  check('迁移总数 = 10 条记忆 + 1 会话文件', n === 11, `got ${n}`)
+  check('中央库已标记 migrated_v3', isCentralMigrated(central) === true)
+  check('迁移幂等：再调返回 0', migrateToCentral([w1, w2, w3], central, '.dsh-meow') === 0)
+  const cdb = getDb('', central)
+  check('七层数据全部合并', cdb.list('user').length === 3 && cdb.list('fact').length === 2 && cdb.list('project').length === 3 && cdb.list('lesson').length === 1 && cdb.list('soul').length === 1)
+  const u1r = cdb.findById(u1.id)
+  check('原 id + 时间戳保留', u1r !== undefined && u1r.row.created_at === 111 && u1r.row.id === u1.id)
+  const u1row = cdb.list('user').find((r) => r.content.includes('w1'))
+  const u2row = cdb.list('user').find((r) => r.content.includes('w2'))
+  const u3row = cdb.list('user').find((r) => r.content.includes('w3'))
+  check('w1 单项目 → user 打 dsh 标签', u1row?.project === 'dsh')
+  check('w2 多项目 → user 全局（null）', u2row?.project === null)
+  check('w3 无项目 → user 全局（null）', u3row?.project === null)
+  check('w1 soul 推断 dsh', cdb.list('soul').find((r) => r.content.includes('w1'))?.project === 'dsh')
+  check('w1 旧库已备份为 .old', existsSync(memoryDbPath(w1) + '.old'))
+  check('w2 旧库已备份为 .old', existsSync(memoryDbPath(w2) + '.old'))
+  check('windows 辅助表合并', cdb.getWindow('win-w1')?.workspace === w1)
+  check('sessions 文件搬移+删原件', existsSync(join(central, 'sessions', 's-w1.json')) && !existsSync(join(w1, '.dsh-meow', 'sessions', 's-w1.json')))
+  closeAllDbs()
+  rmSync(mRoot, { recursive: true, force: true })
 }
 
 db.close(); db2.close(); db3.close(); db4.close()

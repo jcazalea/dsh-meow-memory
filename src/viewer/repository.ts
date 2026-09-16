@@ -18,9 +18,10 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
   GLOBAL_PROJECT_CANON,
+  getCentralDbPath,
+  getCentralSessionsDir,
   isGlobalProject,
   LEVELS,
-  memoryDbPath,
   projectList,
   type Level,
   type MemoryRow,
@@ -119,7 +120,8 @@ export class ViewerReader {
   constructor(path: string, title: string, dir: string) {
     this.path = path
     this.title = title
-    this.db = new DatabaseSync(memoryDbPath(path, dir), { readOnly: true })
+    // v3 中央存储：所有工作区共用 ~/.dsh-meow/memory.db，只读打开（拒绝写、拒绝误建）。
+    this.db = new DatabaseSync(getCentralDbPath(dir), { readOnly: true })
     try {
       this.db.exec('PRAGMA busy_timeout = 2000')
     } catch {
@@ -276,10 +278,10 @@ export class ViewerReader {
     return this.all<{ session_id: string }>(`SELECT session_id FROM dream_skip`).map((r) => String(r.session_id))
   }
 
-  /** 会话足迹（sessions/<id>.json：注入/检索/查阅/写过）。 */
+  /** 会话足迹（中央 sessions 目录 <central>/sessions/<id>.json：注入/检索/查阅/写过；v3 中央存储）。 */
   sessionsFootprint(dir: string): SessionsDto['sessions'] {
     const out: SessionsDto['sessions'] = []
-    const dirPath = join(this.path, dir, 'sessions')
+    const dirPath = getCentralSessionsDir(dir)
     if (!existsSync(dirPath)) return out
     let files: string[] = []
     try {
@@ -347,8 +349,8 @@ export class ViewerReader {
 }
 
 /**
- * 跨工作区只读仓储：白名单解析 + 句柄缓存 + 摘要聚合。
- * 所有 workspace 参数都经 `resolve()` 过白名单，绝不接受任意路径。
+ * 跨工作区只读仓储（v3 中央存储：底层只有一个中央库，白名单仍按工作区校验——
+ * workspace 参数不再指向库路径，但保留"该会话属于允许的工作区"语义）。
  */
 export class ViewerRepository {
   private readonly readers = new Map<string, ViewerReader>()
@@ -360,7 +362,7 @@ export class ViewerRepository {
     private readonly maxReaders = 16,
   ) {}
 
-  /** 允许的工作区（registry 优先，windowIndex 兜底补全）。 */
+  /** 允许的工作区（registry 优先，windowIndex 兜底补全；v3 后仅作白名单校验）。 */
   allowed(ctx: unknown, extraWorkspaces: Iterable<string> = []): AllowedWorkspace[] {
     const out = new Map<string, AllowedWorkspace>()
     const reg = (ctx as { get?: (name: string) => unknown } | undefined)?.get?.('workspaceRegistry') as
@@ -394,14 +396,15 @@ export class ViewerRepository {
     return allowed.find((w) => normKey(w.path) === key)
   }
 
-  /** 打开（或复用）只读句柄；无库文件返回 undefined。 */
-  reader(ws: AllowedWorkspace): ViewerReader | undefined {
-    const key = normKey(ws.path) + '\u0000' + this.dir
+  /** 打开（或复用）中央库只读句柄（v3：所有工作区共享一个库）；无库文件返回 undefined。 */
+  reader(_ws: AllowedWorkspace): ViewerReader | undefined {
+    const key = 'central\u0000' + this.dir
     const cached = this.readers.get(key)
     if (cached !== undefined) return cached
-    if (!existsSync(memoryDbPath(ws.path, this.dir))) return undefined
+    if (!existsSync(getCentralDbPath(this.dir))) return undefined
     try {
-      const reader = new ViewerReader(ws.path, ws.title, this.dir)
+      const central = getCentralDbPath(this.dir)
+      const reader = new ViewerReader(central, '记忆库', this.dir)
       this.readers.set(key, reader)
       this.failures.delete(key)
       if (this.readers.size > this.maxReaders) {

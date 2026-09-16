@@ -220,19 +220,36 @@ export interface OverviewOptions {
 /** 跨工作区总览：KPI / 层级分布 / 工作区卡片 / 跨库最近更新 / 全局条目 / 健康检查。 */
 export function buildOverview(repository: ViewerRepository, allowed: readonly AllowedWorkspace[], opts: OverviewOptions): OverviewDto {
   const workspaces = allowed.map((ws) => repository.summary(ws))
+  // v3 中央存储：所有工作区共享一个中央库 → 按 reader 实例去重，避免重复计数。
+  const seenReaders = new Set<ViewerReader>()
+  const readers: ViewerReader[] = []
+  for (const ws of allowed) {
+    const r = repository.reader(ws)
+    if (r === undefined || seenReaders.has(r)) continue
+    seenReaders.add(r)
+    readers.push(r)
+  }
   const byLevel = { soul: 0, user: 0, project: 0, fact: 0, lesson: 0, topic: 0, rules: 0 } as Record<ViewerLevel, number>
   let total = 0
   let stale = 0
   let archived = 0
   let pendingDream = 0
   const projectNames = new Set<string>()
-  for (const ws of workspaces) {
-    for (const level of VIEWER_LEVELS) byLevel[level] += ws.counts[level] ?? 0
-    total += ws.total
-    for (const p of ws.projects) projectNames.add(p)
-    if (ws.dream.lastEventAt !== null && (ws.dream.lastDreamAt ?? 0) < ws.dream.lastEventAt && Date.now() - ws.dream.lastEventAt < 86_400_000 && !ws.dream.skipped) {
-      pendingDream++
+  const primary = readers[0]
+  if (primary !== undefined) {
+    for (const level of VIEWER_LEVELS) byLevel[level] = primary.counts()[level] ?? 0
+    total = Object.values(byLevel).reduce((a, b) => a + b, 0)
+    for (const p of primary.projects()) projectNames.add(p.name)
+    const windows = primary.windows(500)
+    let lastEvent: number | null = null
+    let lastDream: number | null = null
+    let skipped = false
+    for (const w of windows) {
+      if (w.lastEventTime !== null) lastEvent = Math.max(lastEvent ?? 0, w.lastEventTime)
+      if (w.lastDreamTime !== null) lastDream = Math.max(lastDream ?? 0, w.lastDreamTime)
+      if (w.lease !== null) lastEvent = Math.max(lastEvent ?? 0, w.lease.progressAt)
     }
+    if (lastEvent !== null && (lastDream ?? 0) < lastEvent && Date.now() - lastEvent < 86_400_000 && !skipped) pendingDream = 1
   }
 
   const recent: GlobalEntry[] = []
@@ -242,18 +259,16 @@ export function buildOverview(repository: ViewerRepository, allowed: readonly Al
   let newThisWeek = 0
   const weekAgo = Date.now() - WEEK_MS
 
-  for (const ws of allowed) {
-    const reader = repository.reader(ws)
-    if (reader === undefined) continue
+  for (const reader of readers) {
     for (const m of reader.listAll()) {
       if (m.status === 'stale') stale++
       else if (m.status === 'archived') archived++
       if (m.createdAt >= weekAgo) newThisWeek++
-      if (m.project !== null && isGlobalProject(m.project)) globalEntries.push({ workspace: ws.path, workspaceTitle: ws.title, memory: m })
+      if (m.project !== null && isGlobalProject(m.project)) globalEntries.push({ workspace: reader.path, workspaceTitle: reader.title, memory: m })
     }
-    for (const m of reader.recent(opts.recent)) recent.push({ workspace: ws.path, workspaceTitle: ws.title, memory: m })
-    for (const entry of reader.dreamLog(opts.dreamLog)) dreamLog.push({ workspace: ws.title, ...entry })
-    if (opts.health) health.push(...healthOf(reader, ws.title))
+    for (const m of reader.recent(opts.recent)) recent.push({ workspace: reader.path, workspaceTitle: reader.title, memory: m })
+    for (const entry of reader.dreamLog(opts.dreamLog)) dreamLog.push({ workspace: reader.title, ...entry })
+    if (opts.health) health.push(...healthOf(reader, reader.title))
   }
 
   recent.sort((a, b) => b.memory.updatedAt - a.memory.updatedAt)
