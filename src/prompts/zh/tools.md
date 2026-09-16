@@ -3,10 +3,10 @@
 
 ### memory_remember
 
-- memory_remember.description: 把一条值得跨会话记住的信息写入当前工作区的记忆库（SQLite，按 level 分表）。 必填参数：content（内容）/ project（归属："全局"或项目名，多项目用英文逗号分隔）/ keywords（8-13 个检索关键词）/ importance（重要性评估）。缺失会报错并提示重填。 level 分类：soul=AI 自身（少用）；user=用户基本信息与基础偏好； project=项目（项目名如 femwa/meow-memory/meow-eyes/dsh）； rules=设计原则/行为准则（全局准则 project 填"全局"且 importance≥2 会全量注入到首轮；  项目特定准则填 project 参数，随 memory_project 注入；其余走检索）； fact=细碎原子事实（一句话直陈 ≤60 字）；lesson=你学到的经验（被纠正的一定记这里）； topic=话题（建议 goal 目标句，用 keywords 检索）。 铁律：用户介绍项目设计思路/框架/决策理由时，content 必须保留用户原话措辞，不要转述总结。 与已有条目高度重复会自动合并（更新而非新增）。调用成功后工具会返回确认，无需重复调用本工具。
+- memory_remember.description: 把一条值得跨会话记住的信息写入当前工作区的记忆库（SQLite，按 level 分表）。 必填参数：content / keywords（8-13 个检索关键词）/ importance；project 自 v2 起可选（缺省 = 当前工作区项目，由 git 地址或项目路径自动解析，传入与当前不一致时会自动改写并返回 note）。 level 分类：soul=AI 自身（少用）；user=用户基本信息与基础偏好； project=项目； rules=设计原则/行为准则（全局准则 project 填"全局"且 importance≥2 会全量注入到首轮；  项目特定准则随 memory_project 注入；其余走检索）； fact=细碎原子事实（一句话直陈 ≤60 字）；lesson=你学到的经验（被纠正的一定记这里）； topic=话题（建议 goal 目标句，用 keywords 检索）。 铁律：用户介绍项目设计思路/框架/决策理由时，content 必须保留用户原话措辞，不要转述总结。 与已有条目高度重复会自动合并（更新而非新增）。调用成功后工具会返回确认，无需重复调用本工具。
 - memory_remember.param.content: 要记住的内容；fact/lesson 一句话 ≤60 字；topic ≤300 字；涉及用户原话必须保留措辞。
 - memory_remember.param.level: 记忆层级，默认 fact。
-- memory_remember.param.project: 必填。项目名（level=project 时必须是具体项目名）；全局适用的信息填"全局"；同时适用于多个项目时用英文逗号分隔，如"dsh,femwa"。
+- memory_remember.param.project: 可选（v2 起自动归属当前工作区项目，通常不必传）。缺省 = 当前工作区解析出的项目（git 地址或项目路径）；显式传且与当前项目不一致时自动改写为当前项目并返回 note；全局适用的信息显式填"全局"。
 - memory_remember.param.subcategory: project 子类：overview=目标概述/structure=项目结构/decisions=技术决策/quotes=用户原话/ops=部署与数据/todo=进行中。
 - memory_remember.param.goal: 话题目标句（level=topic 建议填，如"让 femGen 集成可用"）。
 - memory_remember.param.importance: 重要性（数字即可，不设上限；软引导 1-4：4=致命红线/健康安全，3=用户强调/全局适用，2=用户决策抽象总结，1=琐碎）。
@@ -14,6 +14,7 @@
 - memory_remember.param.keywords: 手动指定关键词（反思/dream 轮要求提取 8-13 个内容词；不传则自动 bigram 提取）。
 - memory_remember.out.keywords: 实际存储的关键词（自动提取；合并后为最新值）。
 - memory_remember.out.project: 实际归属项目（若有）。
+- memory_remember.out.note: 当传入的项目与当前工作区项目不一致、已被自动改写时的说明。
 
 ### memory_search
 
@@ -58,7 +59,7 @@
 ### memory_project
 
 - memory_project.description: 取回某个项目在记忆库中的完整注入段落（纯文本，按子标签分组，未过时条目一口气全给）。 project 参数必填：你要看哪个项目的信息？不传会报错，先想清楚项目名再调用。 当用户问起某个项目（femwa/meow-memory/meow-eyes/dsh…）的设计历史、技术决策、用户原话、项目进度时调用； 也用于需要项目全景上下文再作答的场合。 规则：组内按记忆时间戳旧→新；todo 子标签输出「已完成：」（最近完成 5 条）+「To do list：」；每条记忆带完整 id、最后更新时间戳与原文。
-- memory_project.param.project: 项目名（会话开头的记忆导引会列出用户的所有 project，直接选用）。
+- memory_project.param.project: 可选（v2）。缺省 = 当前工作区项目；传项目 id（git 地址或路径）可查其它项目。
 - memory_project.out.text: 按子标签分组的项目记忆注入段落（纯文本）。
 
 ### memory_dream

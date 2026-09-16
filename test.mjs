@@ -686,7 +686,7 @@ if (inj) {
     inj.text.includes('【记忆导引】'))
   check('injection first line flush-left', inj.text.startsWith('===== 长期记忆 ====='))
   check('injection guide three lines', inj.text.includes('需要时用 memory_search 检索（必须传 query 检索词，不能空查）、memory_read 读取。') &&
-    inj.text.includes('当有项目相关任务时，应先用 memory_project 查项目全景（记得带上项目名，不能空参）') &&
+    inj.text.includes('当有项目相关任务时，应先用 memory_project 查项目全景（不传 project 参数即查当前项目）') &&
     inj.text.includes('用户的所有 project：'))
   check('injection no topic/project title list', !inj.text.includes('- topic:') && !inj.text.includes('- project:'))
   check('injection has no legacy prompt separator', !inj.text.includes('===== 长期记忆结束 =====') && !inj.text.includes('本轮用户prompt：'))
@@ -738,7 +738,9 @@ const applyDir = mkdtempSync(join(tmpdir(), 'mm-apply-'))
 migrateToCentral([], applyDir)
 
 const { ctx, tools, handlers } = makeCtx()
-await apply(ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh' })
+// v2：本项目测试走「模型显式传 project」模式（resolveProject 关），既有断言不变；
+// 解析器/自动归属的新行为在下方独立测试区覆盖（resolveProject 开）。
+await apply(ctx, { enabled: true, projectDir: applyDir, promptLang: 'zh', resolveProject: false })
 check('seven tools registered', tools.length === 7 && ['memory_remember', 'memory_search', 'memory_find_similar', 'memory_read', 'memory_update', 'memory_dream', 'memory_project']
   .every((name) => tools.some((t) => t.name === name)), `got ${tools.map((t) => t.name).join(',')}`)
 
@@ -888,9 +890,11 @@ check('remember returns project', remRes.project === 'dsh')
 check('remember render shows result', rememberTool.output.render({}, remRes)[0].text.includes('关键词：'))
 check('remember render 给完整 id（36 位；短 id 在同毫秒批量写入时会撞前缀）',
   String(remRes.id).length === 36 && rememberTool.output.render({}, remRes)[0].text.includes(remRes.id))
-// remember 四必填：缺失逐个报错并引导重填
-const missP = await rememberTool.execute({ content: '缺参测试', level: 'fact' }, updCtx).catch((e) => String(e?.message ?? e))
-check('remember requires project', missP.includes('project 参数必填'))
+// remember 必填（v2 起 content/keywords/importance 必填；project 可选——无解析且未显式传才报错）
+// remember 必填（v2 起 content/keywords/importance 必填；project 可选——无解析且未显式传才报错）
+const missP = await rememberTool.execute({ content: '缺参测试', level: 'fact', keywords: ['缺参', '测试'], importance: 1 }, updCtx).catch((e) => String(e?.message ?? e))
+check('remember requires project when unresolved', missP.includes('project'))
+check('remember requires project when unresolved', missP.includes('project'))
 const missK = await rememberTool.execute({ content: '缺参测试', level: 'fact', project: 'dsh' }, updCtx).catch((e) => String(e?.message ?? e))
 check('remember requires keywords', missK.includes('keywords 参数必填'))
 const missI = await rememberTool.execute({ content: '缺参测试', level: 'fact', project: 'dsh', keywords: ['缺参', '测试'] }, updCtx).catch((e) => String(e?.message ?? e))
@@ -1042,7 +1046,11 @@ check('todo 无时间戳已完成排除', !pj.text.includes('无时间戳已完�
 check('todo To do list 全量', pj.text.includes('todo 进行中 A') && pj.text.includes('todo 进行中 B'))
 check('todo 已完成在 To do 之前', pj.text.indexOf('已完成：') < pj.text.indexOf('To do list：'))
 const pjEmpty = await projectTool.execute({ project: 'nope' }, projCtx)
-check('project 空项目提示', pjEmpty.text.includes('暂无记忆条目'))
+check('project 不存在：明确提示而非静默空', pjEmpty.text.includes('不存在'))
+// 存在但空：archived 条目占名但无 active → 仍返回"暂无记忆条目"（v0.30 区分两种情形）
+dbA.insert({ level: 'project', content: 'ghost 旧条目', project: 'ghost', subcategory: 'overview', status: 'archived' })
+const pjGhost = await projectTool.execute({ project: 'ghost' }, projCtx)
+check('project 存在但空：暂无记忆条目', pjGhost.text.includes('暂无记忆条目'))
 
 // rules 层：全局高 importance 注入首轮、其余检索/项目段落
 dbA.insert({ level: 'rules', content: '全局铁律：绝不删除文件只标 archived', project: null, importance: 2 })
@@ -1060,22 +1068,32 @@ const hitR = buildHitInjection(db2, ws2, 's-hit', '规则注入测试', { hitTop
 check('keyword hit covers rules', hitR !== null && hitR.text.includes('规则注入测试专用'))
 check('keyword hit covers topic', hitR !== null && hitR.text.includes('规则注入测试话题'))
 
-// 当前 project 锚定：工具调用带 project → 状态更新；命中检索限定"全局+当前项目"
+// 当前 project 锚定：v2 起锚定只由首轮解析器设置，工具调用不再改锚定（当前项目 = 工作区解析值）
 const anchorCtx = { agent: { session: { header: { cwd: ws2, id: 's-anchor' } } } }
 check('no anchor before tools', getCurrentProject(ws2, 's-anchor', applyDir) === null)
 const remAnc = await rememberTool.execute({ content: '锚定测试记忆', level: 'fact', project: 'femwa', keywords: ['锚定', '测试'], importance: 2 }, anchorCtx)
-check('remember anchors project', remAnc.ok === true && getCurrentProject(ws2, 's-anchor', applyDir) === 'femwa')
+check('remember keeps explicit project', remAnc.ok === true && remAnc.project === 'femwa')
 await searchTool.execute({ query: '锚定', project: 'meow-memory' }, anchorCtx)
-check('search re-anchors project', getCurrentProject(ws2, 's-anchor', applyDir) === 'meow-memory')
+check('search does not re-anchor', getCurrentProject(ws2, 's-anchor', applyDir) === null)
 await projectTool.execute({ project: 'dsh' }, anchorCtx)
-check('memory_project anchors project', getCurrentProject(ws2, 's-anchor', applyDir) === 'dsh')
-// 锚定后命中：全局 + 当前项目；未锚定只全局（命中链路）
-await projectTool.execute({ project: 'femwa' }, anchorCtx)
+check('memory_project does not anchor', getCurrentProject(ws2, 's-anchor', applyDir) === null)
+// 锚定后命中：全局 + 当前项目；未锚定只全局（命中链路）——v2 锚定 = 解析器/显式 setCurrentProject
+setCurrentProject(ws2, 's-anchor', 'femwa', applyDir)
 db2.insert({ level: 'fact', content: 'femwa 专有命中词', project: 'femwa', created_at: Date.now() })
 const hitAnc = buildHitInjection(db2, ws2, 's-anchor', 'femwa 专有命中词', { hitTopK: 3 }, applyDir)
 check('anchored hit includes current project', hitAnc !== null && hitAnc.text.includes('femwa 专有命中词'))
 const hitNoAnc = buildHitInjection(db2, ws2, 's-no-anchor', 'femwa 专有命中词', { hitTopK: 3 }, applyDir)
 check('unanchored hit excludes project-only', hitNoAnc === null || !hitNoAnc.text.includes('femwa 专有命中词'))
+
+// v2 导引声明当前项目：currentProject 非空时注入「当前项目：{name}」
+const ws2Base = ws2.split(/[\\/]+/).filter(Boolean).pop()
+db2.insert({ level: 'project', content: '工作区同名项目正文', project: ws2Base, subcategory: 'overview', created_at: Date.now() })
+setCurrentProject(ws2, 's-ws-cur', 'github.com/x/y', ws2)
+const injCur = buildInjection(db2, ws2, 's-ws-cur', '', {}, ws2)
+check('guide declares current project', injCur !== null && injCur.text.includes('当前项目：github.com/x/y'))
+// 未锚定会话不声明（兼容旧行为）
+const injNoCur = buildInjection(db2, ws2, 's-ws-nocur', '', {}, ws2)
+check('guide omits current project when unanchored', injNoCur === null || !injNoCur.text.includes('当前项目：'))
 
 // 命中基于 keywords 而非全文：content 含词但 keywords 不含 → 不命中（防噪音）
 const noiseId = db2.insert({ level: 'fact', content: '这段话的全文里出现了测试两个字但关键词是别的', project: null }).id
@@ -1795,6 +1813,66 @@ rmSync(ctxOffDir, { recursive: true, force: true })
 db.close(); db2.close(); db3.close(); db4.close()
 dbW.close()
 closeAllDbs()
+
+// ═══════════════════════ v2：project 工作区解析（resolve.ts） ═══════════════════════
+// 手工构造 .git/config（INI 文本）模拟仓库，零外部 git 依赖、沙箱安全。
+{
+  const { resolveProjectId, normalizeGitUrl, setProjectResolveEnabled, clearProjectResolveCache } = await import('./lib/index.js')
+  // 本测试区需要解析器开启；结束恢复 false（主套件其余断言依赖显式 project）。
+  setProjectResolveEnabled(true)
+  clearProjectResolveCache()
+
+  // 归一化
+  check('normalize https url', normalizeGitUrl('https://github.com/jcazalea/dsh-meow-memory.git') === 'github.com/jcazalea/dsh-meow-memory')
+  check('normalize scp url', normalizeGitUrl('git@github.com:jcazalea/dsh-meow-memory.git') === 'github.com/jcazalea/dsh-meow-memory')
+  check('normalize ssh url', normalizeGitUrl('ssh://git@github.com/jcazalea/x.git') === 'github.com/jcazalea/x')
+  check('normalize url with credentials+port', normalizeGitUrl('https://user:token@github.com:443/a/b.git') === 'github.com/a/b')
+  check('normalize bare host/path', normalizeGitUrl('github.com/jcazalea/x') === 'github.com/jcazalea/x')
+
+  const mkRepo = (dir, cfg) => {
+    mkdirSync(join(dir, '.git'), { recursive: true })
+    writeFileSync(join(dir, '.git', 'config'), cfg)
+  }
+  const REPO_CFG = '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = https://github.com/jcazalea/dsh-meow-memory.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+
+  const wsGit = mkdtempSync(join(tmpdir(), 'mm-git-'))
+  mkRepo(wsGit, REPO_CFG)
+  check('resolve git workspace → normalized url', resolveProjectId(wsGit)?.id === 'github.com/jcazalea/dsh-meow-memory' && resolveProjectId(wsGit)?.kind === 'git')
+  mkdirSync(join(wsGit, 'src'), { recursive: true })
+  check('resolve subdir session → same repo id', resolveProjectId(join(wsGit, 'src'))?.id === 'github.com/jcazalea/dsh-meow-memory')
+
+  const wsGitNoRemote = mkdtempSync(join(tmpdir(), 'mm-gitnr-'))
+  mkRepo(wsGitNoRemote, '[core]\n\trepositoryformatversion = 0\n')
+  check('resolve git-no-remote → repo root path', resolveProjectId(wsGitNoRemote)?.id === wsGitNoRemote && resolveProjectId(wsGitNoRemote)?.kind === 'path')
+
+  const wsPlain = mkdtempSync(join(tmpdir(), 'mm-plain-'))
+  check('resolve non-git workspace → cwd path', resolveProjectId(wsPlain)?.id === wsPlain && resolveProjectId(wsPlain)?.kind === 'path')
+
+  // worktree：.git 是 gitfile → gitdir 指向 worktrees/<name>，config 回退主仓库
+  const wsMain = mkdtempSync(join(tmpdir(), 'mm-main-'))
+  mkRepo(wsMain, '[remote "origin"]\n\turl = https://github.com/jcazalea/main-repo.git\n')
+  const wtDir = mkdtempSync(join(tmpdir(), 'mm-wtwork-'))
+  mkdirSync(join(wsMain, '.git', 'worktrees', 'wt1'), { recursive: true })
+  writeFileSync(join(wtDir, '.git'), `gitdir: ${wsMain}/.git/worktrees/wt1\n`)
+  check('resolve worktree gitfile → main repo url', resolveProjectId(wtDir)?.id === 'github.com/jcazalea/main-repo')
+
+  // remember 自动归属（resolveProject 开）：改写 + note / 缺省 / 全局通道
+  const rwCtx = { agent: { session: { header: { cwd: wsGit, id: 's-rw' } } } }
+  const remRW = await rememberTool.execute({ content: '自动改写测试', level: 'fact', project: 'meow-memory', keywords: ['自动', '改写'], importance: 1 }, rwCtx)
+  check('remember rewrites mismatched project + note', remRW.ok === true && remRW.project === 'github.com/jcazalea/dsh-meow-memory' && typeof remRW.note === 'string' && remRW.note.includes('已自动改写'))
+  const remDef = await rememberTool.execute({ content: '缺省归属测试', level: 'fact', keywords: ['缺省', '归属'], importance: 1 }, rwCtx)
+  check('remember defaults to workspace project', remDef.ok === true && remDef.project === 'github.com/jcazalea/dsh-meow-memory')
+  const remGlob = await rememberTool.execute({ content: '全局通道测试', level: 'fact', project: '全局', keywords: ['全局', '通道'], importance: 1 }, rwCtx)
+  check('remember keeps explicit global', remGlob.ok === true && remGlob.project === '全局')
+  // memory_project 无参 → 缺省当前工作区项目
+  const projDef = await projectTool.execute({}, rwCtx)
+  check('memory_project defaults to workspace project', projDef.project === 'github.com/jcazalea/dsh-meow-memory' && typeof projDef.text === 'string')
+  setProjectResolveEnabled(false)
+  clearProjectResolveCache()
+
+  for (const d of [wsGit, wsGitNoRemote, wsPlain, wsMain, wtDir]) rmSync(d, { recursive: true, force: true })
+}
+
 rmSync(ws, { recursive: true, force: true })
 rmSync(ws2, { recursive: true, force: true })
 rmSync(ws3, { recursive: true, force: true })

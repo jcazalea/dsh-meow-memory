@@ -13,12 +13,13 @@ import { findSimilar, search, tokenize, type RankedHit } from './bm25.js'
 import { getDb, getDreamWorkspace, globalProjectMarker, isGlobalProject, projectCovers, projectLabel, projectList, relativeTime, type Level, LEVELS, type MemoryPatch, type MemoryRow, type ProjectSubcategory, PROJECT_SUBCATEGORIES } from './db.js'
 import { fillTemplate, keyedValue } from './prompt-loader.js'
 import { isSessionMemoryEnabled } from './session-state.js'
+import { resolveProjectId } from './resolve.js'
 
 /** tools.md 键值取用（prompt 文案外置 v0.19.0）：缺键时 keyedValue throw。 */
 const T = (key: string): string => keyedValue('tools', key)
 /** 框架词/报错文案（labels.md）：与工具描述同源，随语言包走。 */
 const L = (key: string, params?: Record<string, string>): string => fillTemplate(keyedValue('labels', key), params)
-import { buildProjectSectionText, markProjectQueried, markWritten, readSeen, markAccessed, markSearched, setCurrentProject } from './inject.js'
+import { buildProjectSectionText, markProjectQueried, markWritten, readSeen, markAccessed, markSearched } from './inject.js'
 
 export type { Level }
 
@@ -93,7 +94,7 @@ function rememberTool(dir: string): ToolDefinition {
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['content', 'project', 'keywords', 'importance'],
+      required: ['content', 'keywords', 'importance'],
       properties: {
         content: { type: 'string', description: T('memory_remember.param.content') },
         level: {
@@ -122,26 +123,27 @@ function rememberTool(dir: string): ToolDefinition {
           merged: { type: 'boolean' },
           keywords: { type: 'array', items: { type: 'string' }, description: T('memory_remember.out.keywords') },
           project: { type: 'string', description: T('memory_remember.out.project') },
+          note: { type: 'string', description: T('memory_remember.out.note') },
         },
       },
       render: (_args, value) => {
-        const v = value as { level?: unknown; merged?: unknown; id?: unknown; keywords?: unknown; project?: unknown }
+        const v = value as { level?: unknown; merged?: unknown; id?: unknown; keywords?: unknown; project?: unknown; note?: unknown }
         const kw = Array.isArray(v.keywords) && v.keywords.length > 0 ? `关键词：${v.keywords.join(' / ')}。` : ''
         const proj = typeof v.project === 'string' ? `项目：${v.project}。` : ''
+        const note = typeof v.note === 'string' ? `\n${v.note}` : ''
         const head = v.merged ? '✅ 已合并到已有条目' : '✅ 记忆已写入'
         return [{
           type: 'text' as const,
-          text: `${head}（${String(v.level ?? 'fact')}${typeof v.id === 'string' ? `，id=${v.id}` : ''}）。${proj}${kw}无需重复调用本工具。`,
+          text: `${head}（${String(v.level ?? 'fact')}${typeof v.id === 'string' ? `，id=${v.id}` : ''}）。${proj}${kw}${note}无需重复调用本工具。`,
         }]
       },
     },
     async execute(args: unknown, exec: ToolRunContext) {
       const parsed = args as { content?: unknown; level?: unknown; project?: unknown; subcategory?: unknown; goal?: unknown; importance?: unknown; corrected?: unknown; keywords?: unknown }
       const content = typeof parsed.content === 'string' ? parsed.content.trim() : ''
-      // 四必填：缺失逐个报错并引导重填（用户拍板 2026-08-19）。
+      // 必填：content/keywords/importance（用户拍板 2026-08-19）；project 自 v2 起可选（缺省=当前工作区项目）。
       if (content.length === 0) throw new Error(L('remember.error.content'))
       const project = typeof parsed.project === 'string' && parsed.project.trim() ? parsed.project.trim() : null
-      if (project === null) throw new Error(L('remember.error.project', { global: globalProjectMarker() }))
       const keywords = Array.isArray(parsed.keywords)
         ? parsed.keywords.filter((k): k is string => typeof k === 'string').map((k) => k.trim()).filter((k) => k.length > 0)
         : []
@@ -162,8 +164,23 @@ function rememberTool(dir: string): ToolDefinition {
       if (!workspace) throw new Error('memory_remember: 无法确定工作区（会话无 cwd）')
       const db = getDb(workspace, dir)
       const source_session = sessionIdOf(exec)
-      // 锚定当前 project：带 project 参数的 memory 调用更新会话状态（命中检索用它）；"全局"与多项目（逗号分隔）不锚定。
-      if (project && !isGlobalProject(project) && !project.includes(',')) setCurrentProject(workspace, source_session ?? 'unknown', project, dir)
+      // v2 归属解析：project 可选；缺省 = 当前工作区解析 id；显式传 ≠ 当前 → 自动改写为当前 + note。
+      // 「全局」通道保留（跨项目准则/用户偏好）；无解析结果（resolve 被关/失败）时尊重显式传值。
+      const current = resolveProjectId(workspace)
+      let finalProject = project
+      let note: string | undefined
+      if (project && isGlobalProject(project)) {
+        finalProject = project
+      } else if (current) {
+        if (project && project !== current.id) {
+          note = L('remember.note.rewritten', { from: project, to: current.id })
+        }
+        finalProject = current.id
+      } else if (project) {
+        finalProject = project
+      } else {
+        throw new Error(L('remember.error.project', { global: globalProjectMarker() }))
+      }
 
       // 去重：同 level 找相似条目 → 合并更新
       const existing = db.list(level)
@@ -179,7 +196,7 @@ function rememberTool(dir: string): ToolDefinition {
           content,
           importance: Math.max(merged.importance, importance),
         }
-        if (project && (level === 'project' || level === 'fact' || level === 'lesson' || level === 'topic' || level === 'rules')) patch.project = project
+        if (finalProject && (level === 'project' || level === 'fact' || level === 'lesson' || level === 'topic' || level === 'rules')) patch.project = finalProject
         if (subcategory && level === 'project') patch.subcategory = subcategory
         if (goal && level === 'topic') patch.goal = goal
         if (level === 'lesson' && corrected) patch.corrected = 1
@@ -196,13 +213,14 @@ function rememberTool(dir: string): ToolDefinition {
           merged: true,
           keywords: after?.keywords ?? merged.keywords,
           ...(after?.project ? { project: after.project } : {}),
+          ...(note ? { note } : {}),
         }
       }
 
       const row = db.insert({
         level,
         content,
-        project,
+        project: finalProject,
         subcategory,
         goal,
         importance,
@@ -219,6 +237,7 @@ function rememberTool(dir: string): ToolDefinition {
         merged: false,
         keywords: row.keywords,
         ...(row.project ? { project: row.project } : {}),
+        ...(note ? { note } : {}),
       }
     },
     presentCall(args: unknown): { card: 'generic'; title: string; kind: 'write' } {
@@ -303,8 +322,7 @@ function searchTool(dir: string): ToolDefinition {
         ? parsed.project.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
         : []
       const project = projectList.length > 0 ? projectList : null
-      // 锚定当前 project（命中检索限定"全局+当前项目"）；单值才锚定，"全局"不锚定。
-      if (projectList.length === 1 && !isGlobalProject(projectList[0])) setCurrentProject(workspace, sessionId ?? 'unknown', projectList[0], dir)
+      // v2：锚定不再由工具调用改变（当前项目 = 工作区解析值，首轮自动设置）。
       const statusList = typeof parsed.status === 'string' && parsed.status.trim()
         ? parsed.status.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
         : []
@@ -597,8 +615,7 @@ function updateTool(dir: string): ToolDefinition {
       if (typeof parsed.project === 'string' && (found.level === 'project' || found.level === 'fact' || found.level === 'lesson' || found.level === 'rules' || found.level === 'topic')) {
         const cleared = parsed.project.trim() === ''
         patch.project = cleared ? null : parsed.project.trim()
-        // 锚定当前 project（命中检索限定"全局+当前项目"）；"全局"、清空归属、多项目（逗号分隔）不锚定。
-        if (!cleared && !isGlobalProject(String(patch.project)) && !String(patch.project).includes(',')) setCurrentProject(workspace, sessionId ?? 'unknown', patch.project, dir)
+        // v2：update 的显式归属仅作用于该条目，不再改会话锚定（锚定 = 工作区解析值）。
       }
       if (Array.isArray(parsed.keywords)) {
         // 空数组 = 不更新（用户拍板：防 AI 幻觉"不想改关键词"却传 [] 把关键词全清空）。
@@ -633,7 +650,7 @@ function projectTool(dir: string): ToolDefinition {
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['project'],
+      required: [],
       properties: {
         project: { type: 'string', description: T('memory_project.param.project') },
       },
@@ -655,20 +672,30 @@ function projectTool(dir: string): ToolDefinition {
     },
     async execute(args: unknown, exec: ToolRunContext) {
       const parsed = args as { project?: unknown }
-      const project = typeof parsed.project === 'string' ? parsed.project.trim() : ''
-      if (!project) throw new Error('memory_project: project 不能为空')
+      let project = typeof parsed.project === 'string' ? parsed.project.trim() : ''
       const workspace = workspaceOf(exec)
       if (!workspace) throw new Error('memory_project: 无法确定工作区（会话无 cwd）')
       const db = getDb(workspace, dir)
-      // 锚定当前 project：用户话题切到某项目时 AI 调 memory_project → 命中检索立即跟进；"全局"与多项目不锚定。
+      // v2：project 参数可省略，缺省 = 当前工作区解析的项目 id。
+      if (!project) {
+        const current = resolveProjectId(workspace)
+        if (current) project = current.id
+      }
+      if (!project) throw new Error('memory_project: project 不能为空')
       const sessionId = sessionIdOf(exec)
-      if (!isGlobalProject(project) && !project.includes(',')) setCurrentProject(workspace, sessionId ?? 'unknown', project, dir)
+      // v2：查阅不改变会话锚定（锚定 = 工作区解析值）。
       // 查阅留痕（v0.21.0）：本会话查阅过的项目记入 sessions/<id>.json——会话压缩成功后
       // 按此清单重注入项目全景。全局标记不记（markProjectQueried 内部过滤，全局层走快照）；
       // 多项目参数按逗号拆开逐个记（重注入按单项目段落拼装）。
       markProjectQueried(workspace, sessionId ?? 'unknown', project, dir)
       const text = buildProjectSectionText(db, workspace, project, dir)
       if (text === null) {
+        // 区分「名字不存在」与「存在但空」（v0.30）：不存在时明确提示，给模型自纠机会——
+        // 否则"该项目暂无记忆条目"会被当成"有这项目只是空"，拼错的名字将永远错下去。
+        if (!db.listProjectNames().includes(project)) {
+          const close = db.listProjectNames().filter((n) => n.includes(project) || project.includes(n))
+          return { project, text: L('project.unknown', { name: project, close: close.length ? '，相近：' + close.join(' / ') : '' }) }
+        }
         return { project, text: L('project.empty', { name: project }) }
       }
       return { project, text }

@@ -3,10 +3,10 @@
 
 ### memory_remember
 
-- memory_remember.description: Write something worth remembering across sessions into this workspace's memory store (SQLite, one table per level). Required: content / project ("global", or a project name; comma-separate several) / keywords (8-13 retrieval keywords) / importance. Leaving one out raises an error asking you to fill it in. Levels: soul=the AI itself (use sparingly); user=the user's basic facts and baseline preferences; project=a project (e.g. femwa/meow-memory/meow-eyes/dsh); rules=design principles / behavioral guidelines (a global rule takes project "global", and with importance>=2 it is injected in full on the first turn;  a project-specific rule takes that project's name and is injected with memory_project; everything else surfaces through search); fact=small atomic facts (one plain sentence, <=30 words); lesson=what you learned, your own experience (anything you were corrected on belongs here); topic=a thread (give it a goal sentence; retrieved by keywords). Hard rule: when the user explains a project's design thinking, framework, or the reasoning behind a decision, content must preserve the user's own wording — do not paraphrase or summarize it away. Entries that heavily overlap an existing one are merged automatically (updated, not duplicated). The tool confirms on success — no need to call it again.
+- memory_remember.description: Write something worth remembering across sessions into this workspace's memory store (SQLite, one table per level). Required: content / keywords (8-13 retrieval keywords) / importance; project is optional since v2 — it defaults to the current workspace project, derived automatically from the git remote URL or the project path, and any mismatched explicit project is rewritten to the current one with a note. Levels: soul=the AI itself (use sparingly); user=the user's basic facts and baseline preferences; project=a project; rules=design principles / behavioral guidelines (a global rule takes project "global", and with importance>=2 it is injected in full on the first turn;  a project-specific rule is injected with memory_project; everything else surfaces through search); fact=small atomic facts (one plain sentence, <=30 words); lesson=what you learned, your own experience (anything you were corrected on belongs here); topic=a thread (give it a goal sentence; retrieved by keywords). Hard rule: when the user explains a project's design thinking, framework, or the reasoning behind a decision, content must preserve the user's own wording — do not paraphrase or summarize it away. Entries that heavily overlap an existing one are merged automatically (updated, not duplicated). The tool confirms on success — no need to call it again.
 - memory_remember.param.content: What to remember; fact/lesson one sentence <=30 words; topic <=180 words; wherever the user's own words are involved, keep their wording.
 - memory_remember.param.level: Memory level, default fact.
-- memory_remember.param.project: Required. Project name (must be a concrete project name when level=project); use "global" for globally applicable information; comma-separate several projects, e.g. "dsh,femwa".
+- memory_remember.param.project: Optional (v2: memories automatically belong to the current workspace project, so this is usually not needed). Defaults to the workspace-derived project (git remote URL or project path); an explicit value that differs from the current project is rewritten to the current one with a note; pass "global" explicitly for globally applicable information.
 - memory_remember.param.subcategory: project subcategory: overview=purpose and summary / structure=architecture / decisions=technical decisions / quotes=the user's own words / ops=deployment and data / todo=in progress.
 - memory_remember.param.goal: The topic's goal sentence (recommended when level=topic, e.g. "get the femGen integration working").
 - memory_remember.param.importance: Importance (any number, no upper bound; soft guide 1-4: 4=fatal red line / health and safety, 3=stressed by the user / globally applicable, 2=a user decision or an abstract conclusion, 1=trivia).
@@ -14,6 +14,7 @@
 - memory_remember.param.keywords: Keywords you choose (the reflection/dream rounds ask for 8-13 content words; omit it and they are extracted automatically).
 - memory_remember.out.keywords: The keywords actually stored (auto-extracted; after a merge, the latest value).
 - memory_remember.out.project: The project actually recorded (if any).
+- memory_remember.out.note: Explanation returned when an explicit project differed from the current workspace project and was rewritten automatically.
 
 ### memory_search
 
@@ -58,7 +59,7 @@
 ### memory_project
 
 - memory_project.description: Retrieve a project's complete injection block from the memory store (plain text, grouped by subcategory, every entry that is not out of date at once). project is required: which project do you want to see? Calling without it raises an error, so settle on the project name first. Call it when the user brings up a project (femwa/meow-memory/meow-eyes/dsh, ...) and asks about its design history, technical decisions, their own past words, or where it stands; also whenever you need the project-wide picture before you answer. Rules: within a group, entries run old -> new by memory timestamp; the todo subcategory prints "Done:" (the 5 most recently completed) followed by "To do list:"; every entry carries its full id, its last-updated timestamp, and its text.
-- memory_project.param.project: Project name (the memory guide at the start of the session lists every project the user has — pick from it).
+- memory_project.param.project: Optional (v2). Defaults to the current workspace project; pass a project id (git URL or path) to query another project.
 - memory_project.out.text: The project's memory block, grouped by subcategory (plain text).
 
 ### memory_dream

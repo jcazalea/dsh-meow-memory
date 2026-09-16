@@ -268,6 +268,36 @@ GET /graph?scope=&workspace=&level=&edges=&threshold=&topK=&limit=   星图节�
 
 统一响应 `{ ok, data, meta: { generatedAt, etag, partial } }`；带 `If-None-Match` 命中即 304（前端 60s 轮询几乎零成本）；`partial` 列出读取失败的工作区。
 
+**面板里的「项目」从哪来 / 怎么删**
+
+项目**不是一张独立的表**，也没有"新建项目"入口：它是各层记忆条目 `project` 字段值的聚合投影（`repository.projects()` / `aggregate.projectSummaries()`；单值或逗号分隔的多归属都拆开计数，`全局`/`未标记` 各自成桶）。所以：
+
+- **出现**：任何一次 `memory_remember`（v2 起缺省自动归属当前工作区派生的项目 id；或显式传的 project、dream 封存时打的归属、旧库迁移带进来的标签）都会让该项目出现在面板里。
+- **消失**：改写引用它的那些条目的 `project` 字段。查看器本身**只读**（Phase 4 的写操作未做），所以用脚本：
+
+```bash
+python3 scripts/project-admin.py ls                  # 看当前项目清单与条目数
+python3 scripts/project-admin.py rm foo --dry-run    # 预览：摘标签 + 归档（面板立即消失）
+python3 scripts/project-admin.py rm foo --yes        # 执行（自动备份 memory.db 为 .bak-<时间戳>）
+python3 scripts/project-admin.py mv foo bar --yes    # 改名（同名已存在则等价于合并）
+```
+
+`rm` 三种处理方式：`--mode archive`（默认，摘标签+归档，记忆仍在库里可查）/ `unlabel`（摘标签但保持 active，仍参与检索注入）/ `global`（转为全局，跨项目注入）；加 `--purge` 额外物理删除该项目下非 active 的条目。**删项目前先停掉 `dsh web`**，避免插件并发写覆盖。
+
+**项目错归属防护（v2）**：project 不再由模型编标签，而是**由工作区自动派生**——有 git 用归一化 remote origin 地址（如 `github.com/jcazalea/dsh-meow-memory`，剥协议/凭证/端口/尾部 `.git`、host 小写），无 git（或本地仓库无 remote）用规范化绝对路径。解析规则：
+
+- **探测**：沿 cwd 向上找最近 `.git`（与 `git rev-parse --show-toplevel` 语义一致，支持 worktree/submodule 的 gitfile），只向上不向下（父目录含多个子仓库时走路径 id，确定性可审计）。
+- **写入**：`memory_remember` 的 `project` 参数可选，缺省 = 当前工作区解析 id；显式传且与当前项目不一致时**自动改写为当前项目并返回 `note`**；「全局」通道保留（跨项目准则/用户偏好）。会话锚定在首轮由解析器自动设置，工具调用不再改变锚定（`memory_project` 不传参数即查当前项目）。
+- **旧数据**：既有逻辑名（`femwa`、`meow-memory` 等）保持原样，升级后新记忆走新 id（双轨并存，暂不迁移；可用 `project-admin.py mv` 手工合并）。
+- 开关：`apply({ resolveProject: false })` 退回「模型显式传 project」模式。
+
+配套两个只读诊断脚本：
+
+```bash
+python3 scripts/project-check.py foo --workspace /path/to/cwd   # 写前校验：名字存在？与目录名匹配？
+python3 scripts/project-audit.py                                 # 审计：扫描会话痕迹，标出锚定与目录名不符的会话
+```
+
 **只读与安全（硬约束）**
 
 - 跨工作区读取用 `new DatabaseSync(path, { readOnly: true })`：拒绝写、**拒绝打开不存在的库**（不会给别的工作区误建库）。刻意**不复用 `getDb()`**——它会 `mkdirSync` + 建表 + 跑 `upgrade()`。

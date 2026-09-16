@@ -281,18 +281,26 @@ function buildInjectionBody(
   const globalRules = db.list('rules', { status: 'active' }).filter((r) => r.project === null && r.importance >= 2)
   pushEntries(lbl('inject.rules'), globalRules)
 
-  // 记忆导引：说明 + 项目列表（正文/标题一律自取，不列）。
-  // titleMax 落地（2026-09-10）：schema/设置页一直承诺「导引里项目名的截断长度」，
-  // 此前是死配置（shortTitle 被 void）。这里按承诺截断项目名——只影响导引一行展示，
-  // 记忆条目正文/标题依旧不截断（v0.19.0 拍板不变）。
+  // 记忆导引：当前项目 + 项目清单（正文/标题一律自取，不列）。
+  // v2：project 由工作区派生（git 地址/路径），首轮已由解析器锚定 currentProject；
+  // 清单保留供 memory_project 显式查阅其它项目。
   const projectNames = db.listProjectNames()
-  if (projectNames.length > 0) {
-    const max = o.titleMax
-    const shown = projectNames.map((n) => (n.length > max ? n.slice(0, max) + '…' : n))
+  const max = o.titleMax
+  const trunc = (n: string): string => (n.length > max ? n.slice(0, max) + '…' : n)
+  if (currentProject) {
+    lines.push(lbl('inject.sectionFormat', { label: lbl('inject.guide') }))
+    lines.push(lbl('inject.guideCurrentProject', { name: trunc(currentProject) }))
+    lines.push(lbl('inject.guideSearchLine'))
+    lines.push(lbl('inject.guideProjectLine'))
+    if (projectNames.length > 0) {
+      lines.push(lbl('inject.guideProjects', { list: projectNames.map(trunc).join(' / ') }))
+    }
+    lines.push('')
+  } else if (projectNames.length > 0) {
     lines.push(lbl('inject.sectionFormat', { label: lbl('inject.guide') }))
     lines.push(lbl('inject.guideSearchLine'))
     lines.push(lbl('inject.guideProjectLine'))
-    lines.push(lbl('inject.guideProjects', { list: shown.join(' / ') }))
+    lines.push(lbl('inject.guideProjects', { list: projectNames.map(trunc).join(' / ') }))
     lines.push('')
   }
 

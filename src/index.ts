@@ -46,7 +46,8 @@ import {
   shortSessionId,
   type DreamConfig,
 } from './dream.js'
-import { buildHitInjection, buildInjection, buildReinjection, clearReinjectPending, isReinjectPending, markAccessed, markReinjectPending, markSearched, readProjectQueried, readSeen, readInjected, releaseSeen } from './inject.js'
+import { buildHitInjection, buildInjection, buildReinjection, clearReinjectPending, isReinjectPending, markAccessed, markReinjectPending, markSearched, readProjectQueried, readSeen, readInjected, releaseSeen, setCurrentProject } from './inject.js'
+import { resolveProjectId, setProjectResolveEnabled } from './resolve.js'
 import { migrateLegacy } from './migrate.js'
 import { buildReflectMessage, consecutiveToolSteps, PLUGIN_SOURCE, REFLECT_MARKER, scanTurn } from './reflect.js'
 import { registerMemoryTools } from './tools.js'
@@ -154,6 +155,8 @@ export const Config = z.object({
   hitTopK: z.number().min(0).max(10).default(2),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
+  /** v2：project 由工作区派生（git 地址/路径）。false 时退回模型显式传 project。 */
+  resolveProject: z.boolean().default(true),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
   reflect: z.boolean().default(true),
   /** 单任务内连续工具 step 达到该值才在结束时触发反思（用户拍板：react ≥7 轮）。 */
@@ -300,6 +303,7 @@ interface ResolvedConfig {
   projectDir: string
   hitTopK: number
   titleMax: number
+  resolveProject: boolean
   reflect: boolean
   reflectTurns: number
   autoMigrate: boolean
@@ -559,6 +563,8 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
     ctx.logger.info('meow-memory: disabled by config')
     return
   }
+  // v2：project 工作区派生的总开关（resolveProject=false 时退回模型显式传 project）。
+  setProjectResolveEnabled(resolved.resolveProject)
   // prompt 语言（实例常量）：setPromptLang 一次，loader/bm25 内部取用——链路零透传。
   // 必须先于工具注册（tools.md 描述也吃这个语言）。未配置时运行时兜底 zh。
   setPromptLang(resolved.promptLang ?? 'zh')
@@ -812,6 +818,11 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
         if (ws) {
           const firstUser = userMsgs[0]
           const db = getDb(ws, resolved.projectDir)
+          // v2：首轮由工作区派生 project 并锚定（git 地址/路径 → id），模型不再编标签。
+          if (resolved.resolveProject) {
+            const rp = resolveProjectId(ws)
+            if (rp) setCurrentProject(ws, sid, rp.id, resolved.projectDir)
+          }
           if (resolved.autoMigrate && existsSync(join(ws, resolved.projectDir, 'PROJECT.md'))) {
             const n = migrateLegacy(db, ws, resolved.projectDir)
             if (n !== null) ctx.logger.info(`meow-memory: migrated legacy PROJECT.md → SQLite (${n} entries)`)
@@ -1351,6 +1362,7 @@ export { MemoryDb, memoryDbPath, getDb, closeAllDbs, LEVELS, newId, PROJECT_SUBC
 export { migrateLegacy } from './migrate.js'
 export { isCentralMigrated, migrateToCentral, migrateLegacyPath, resolveLegacyDb, type LegacyMigrateResult } from './migrate-central.js'
 export { buildHitInjection, buildInjection, buildReinjection, buildProjectSectionText, readSeen, markSearched, markAccessed, readInjected, markInjected, markProjectQueried, readProjectQueried, markWritten, readWritten, markReinjectPending, clearReinjectPending, isReinjectPending, MAX_REINJECT_PROJECTS, MAX_REINJECT_WRITTEN, sessionsFile, getCurrentProject, setCurrentProject, releaseSeen } from './inject.js'
+export { resolveProjectId, normalizeGitUrl, probeGit, readOriginUrl, setProjectResolveEnabled, clearProjectResolveCache } from './resolve.js'
 export { buildReflectMessage, consecutiveToolSteps, scanTurn } from './reflect.js'
 export { tokenize, stemEn, search, findSimilar, topicDrift, recencyWeight } from './bm25.js'
 export { fillTemplate, keyedValue, resolveSlotText, setPromptLang, getPromptLang, DEFAULT_LANG, SLOTS } from './prompt-loader.js'
