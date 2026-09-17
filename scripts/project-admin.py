@@ -322,6 +322,31 @@ def confirm(prompt: str) -> bool:
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
+def cmd_rename(args, conn: sqlite3.Connection, db_path: Path) -> int:
+    """项目别名（v0.30.1）：只改 projects 表 display_name，记忆归属不变。"""
+    target, display = args.target, args.display
+    has = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'").fetchone()
+    if not has:
+        print("错误：该库尚无项目映射表（未运行 v0.30.1 升级，或库未被新版打开过）", file=sys.stderr)
+        return 2
+    row = conn.execute("SELECT display_name FROM projects WHERE id=?", (target,)).fetchone()
+    if not row:
+        print(f"错误：映射表里没有项目 id「{target}」（用 ls 看清单）", file=sys.stderr)
+        return 2
+    clash = conn.execute("SELECT id FROM projects WHERE display_name=? AND id!=?", (display, target)).fetchone()
+    if clash:
+        print(f"错误：展示名「{display}」已被项目「{clash[0]}」占用", file=sys.stderr)
+        return 2
+    print(f"将改展示名：{target}\n  {row[0]} → {display}\n（记忆归属不变；面板/导引/星图立即跟随）")
+    if getattr(args, "dry_run", False):
+        print("（--dry-run 预览，未修改）")
+        return 0
+    conn.execute("UPDATE projects SET display_name=?, updated_at=? WHERE id=?", (display, int(time.time() * 1000), target))
+    conn.commit()
+    print("✅ 已改名")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="project-admin.py",
@@ -354,6 +379,11 @@ def main(argv=None) -> int:
                       help="archive=归档(默认) / unlabel=转未标记 / global=转全局")
     p_rm.add_argument("--purge", action="store_true", help="同时物理删除该项目下非 active 的条目")
 
+    p_rename = sub.add_parser("rename", help="项目别名：只改展示名（display_name），记忆归属不变（v0.30.1 映射表）")
+    p_rename.add_argument("target", help="项目 id（=记忆表 project 值；ls 可见）")
+    p_rename.add_argument("display", help="新展示名")
+    add_common_flags(p_rename)
+
     args = ap.parse_args(argv)
     db_path = (args.db or default_db()).expanduser()
     conn = connect(db_path)
@@ -364,6 +394,8 @@ def main(argv=None) -> int:
             return cmd_mv(args, conn, db_path)
         if args.cmd == "rm":
             return cmd_rm(args, conn, db_path)
+        if args.cmd == "rename":
+            return cmd_rename(args, conn, db_path)
         return 1
     except sqlite3.OperationalError as e:
         print(f"错误：写库失败（{e}）——若 dsh web 正在运行，请先停掉再执行。", file=sys.stderr)

@@ -181,6 +181,8 @@ function rememberTool(dir: string): ToolDefinition {
       } else {
         throw new Error(L('remember.error.project', { global: globalProjectMarker() }))
       }
+      // 项目映射表注册（v0.30.1）：写入即登记 id ↔ display_name；全局/空不建行，幂等。
+      if (finalProject && !isGlobalProject(finalProject)) db.registerProjects([finalProject])
 
       // 去重：同 level 找相似条目 → 合并更新
       const existing = db.list(level)
@@ -680,6 +682,11 @@ function projectTool(dir: string): ToolDefinition {
       if (!project) {
         const current = resolveProjectId(workspace)
         if (current) project = current.id
+      }
+      // v0.30.1：参数兼容 display_name（映射表别名）——传展示名时解析到真实 id。
+      if (project && !db.listProjectNames().includes(project) && !isGlobalProject(project)) {
+        const byDisplay = db.projectIdByDisplay(project)
+        if (byDisplay) project = byDisplay
       }
       if (!project) throw new Error('memory_project: project 不能为空')
       const sessionId = sessionIdOf(exec)

@@ -65,6 +65,23 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
     }
   }, [workspace])
 
+  // 展示层统一走短名（项目映射表 display）；未标记/多值兼容；未知 id 回退原值
+  const displayOf = useCallback(
+    (id: string | null | undefined): string => {
+      if (id === null || id === undefined || id === '') return '未标记'
+      return id
+        .split(',')
+        .map((s) => {
+          const t = s.trim()
+          if (t === '') return t
+          const hit = (projects?.projects ?? []).find((p: { name: string; display: string }) => p.name === t)
+          return hit ? hit.display : t
+        })
+        .join(', ')
+    },
+    [projects],
+  )
+
   const reloadList = useCallback(async () => {
     setLoading(true)
     try {
@@ -129,7 +146,7 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
           'div',
           { key: p.name, className: 'mmv-prow' + (project === p.name ? ' on' : ''), onClick: () => setProject(p.name) },
           h('span', { style: { width: 8, height: 8, borderRadius: '50%', background: '#7aa2f7', opacity: 0.85 } }),
-          p.name,
+          p.display,
           h('b', null, String(p.total)),
         ),
       ),
@@ -166,7 +183,7 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
     h(
       'div',
       { className: 'mmv-pane mid' },
-      title !== undefined ? h('div', { className: 'mmv-note', style: { marginBottom: 8 } }, `项目：${project ?? '全部'} · ${title}`) : null,
+      title !== undefined ? h('div', { className: 'mmv-note', style: { marginBottom: 8 } }, `项目：${project ? displayOf(project) : '全部'} · ${title}`) : null,
       error.length > 0 ? h('div', { className: 'mmv-error' }, error) : null,
       tab === 'list'
         ? h(
@@ -200,7 +217,7 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
                       'div',
                       { className: 'top' },
                       h(LevelBadge, { level: m.level, sub: m.subcategory }),
-                      h('em', null, m.project ?? '未标记'),
+                      h('em', null, displayOf(m.project)),
                       h('span', { style: { marginLeft: 'auto' } }, h(Stars, { n: m.importance })),
                       h(StatusDot, { status: m.status }),
                       h('span', { className: 'r' }, relativeTime(m.updatedAt)),
@@ -214,7 +231,7 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
           ? h(TimelineTab, { workspace })
           : tab === 'dreams'
             ? h(DreamsTab, { workspace })
-            : h(SessionsTab, { workspace }),
+            : h(SessionsTab, { workspace, displayOf }),
     ),
     // 右：详情
     h(
@@ -222,7 +239,7 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
       { className: 'mmv-pane right' },
       selected === null
         ? h('div', { className: 'mmv-empty' }, '← 选一条记忆看详情')
-        : h(DetailPane, { memory: selected, similar }),
+        : h(DetailPane, { memory: selected, similar, displayOf }),
     ),
   )
 }
@@ -230,9 +247,11 @@ export function WorkspaceView({ workspace, title, initialProject = '' }: { works
 function DetailPane({
   memory,
   similar,
+  displayOf,
 }: {
   memory: MemoryDto
   similar: Array<{ similarity: number; memory?: MemoryDto }>
+  displayOf: (id: string | null | undefined) => string
 }): ReactNode {
   return h(
     'div',
@@ -241,7 +260,7 @@ function DetailPane({
       'div',
       { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' } },
       h(LevelBadge, { level: memory.level, sub: memory.subcategory }),
-      h('span', { className: 'mmv-note' }, memory.project ?? '未标记'),
+      h('span', { className: 'mmv-note' }, displayOf(memory.project)),
       h('span', { className: 'mmv-note', style: { marginLeft: 'auto' } }, memory.status),
     ),
     h('p', { className: 'body' }, memory.content),
@@ -386,7 +405,7 @@ function DreamsTab({ workspace }: { workspace: string }): ReactNode {
   )
 }
 
-function SessionsTab({ workspace }: { workspace: string }): ReactNode {
+function SessionsTab({ workspace, displayOf }: { workspace: string; displayOf: (id: string | null | undefined) => string }): ReactNode {
   const [data, setData] = useState<SessionsDto | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
@@ -418,7 +437,7 @@ function SessionsTab({ workspace }: { workspace: string }): ReactNode {
         h(
           'span',
           null,
-          `注入 ${s.injected} · 检索 ${s.searched} · 查阅 ${s.accessed} · 写过 ${s.written}${s.currentProject !== null ? ` · 锚定 ${s.currentProject}` : ''}`,
+          `注入 ${s.injected} · 检索 ${s.searched} · 查阅 ${s.accessed} · 写过 ${s.written}${s.currentProject !== null ? ` · 锚定 ${displayOf(s.currentProject)}` : ''}`,
         ),
       ),
     ),

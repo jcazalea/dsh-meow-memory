@@ -134,4 +134,6 @@ export const viewerApi = {
   ) => get<GraphDto>('/graph', params, signal),
   /** 面板「迁移旧库」：手动把任意旧库（memory.db/库目录/项目根）并入中央库。 */
   migrateLegacy: (path: string) => post<LegacyMigrateDto>('/migrate-old', { path }),
+  /** 项目别名（v0.30.1）：改映射表 display_name，记忆条目不搬。 */
+  renameProject: (workspace: string, id: string, display: string) => post<{ id: string; display: string }>('/projects/rename', { workspace, id, display }),
 }

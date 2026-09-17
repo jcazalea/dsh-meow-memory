@@ -130,7 +130,10 @@ export interface MemoriesDto {
 }
 
 export interface ProjectSummary {
+  /** project 值（=映射表主键，稳定 id）。 */
   name: string
+  /** 展示名（项目映射表 display_name；老库无映射表时回退 name）。 */
+  display: string
   total: number
   active: number
   stale: number

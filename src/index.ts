@@ -51,7 +51,7 @@ import { resolveProjectId, setProjectResolveEnabled } from './resolve.js'
 import { migrateLegacy } from './migrate.js'
 import { buildReflectMessage, consecutiveToolSteps, PLUGIN_SOURCE, REFLECT_MARKER, scanTurn } from './reflect.js'
 import { registerMemoryTools } from './tools.js'
-import { isSessionMemoryEnabled, resetSessionMemoryCache, setSessionMemoryEnabled } from './session-state.js'
+import { isSessionMemoryEnabled, resetSessionMemoryCache, setNonGitMemoryPolicy, setSessionMemoryEnabled } from './session-state.js'
 import { resolveSlotText, setPromptLang } from './prompt-loader.js'
 import { createViewerApi } from './viewer/routes.js'
 
@@ -157,6 +157,10 @@ export const Config = z.object({
   titleMax: z.number().min(10).max(200).default(40),
   /** v2：project 由工作区派生（git 地址/路径）。false 时退回模型显式传 project。 */
   resolveProject: z.boolean().default(true),
+  /** 非 git 工作区的记忆默认开关（v0.30.2）：git 项目恒启用记忆；非 git 工作区
+   *  （无 .git 的目录）默认是否启用——false 时这类工作区不注入/不反思/工具禁用。
+   *  会话按钮的手动开关（session_state 显式三态）始终优先于本设置。 */
+  nonGitWorkspaceMemory: z.boolean().default(true),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
   reflect: z.boolean().default(true),
   /** 单任务内连续工具 step 达到该值才在结束时触发反思（用户拍板：react ≥7 轮）。 */
@@ -304,6 +308,7 @@ interface ResolvedConfig {
   hitTopK: number
   titleMax: number
   resolveProject: boolean
+  nonGitWorkspaceMemory: boolean
   reflect: boolean
   reflectTurns: number
   autoMigrate: boolean
@@ -322,6 +327,10 @@ function resolveConfig(config: unknown): ResolvedConfig {
     projectDir: c.projectDir ?? '.dsh-meow',
     hitTopK: c.hitTopK ?? 2,
     titleMax: c.titleMax ?? 40,
+    // v0.30.2 修复：此前 resolveConfig 漏回 resolveProject（接口有声明、运行时恒
+    // undefined → 生产环境 setProjectResolveEnabled(undefined)=关、首轮锚定被跳过）。
+    resolveProject: c.resolveProject ?? true,
+    nonGitWorkspaceMemory: c.nonGitWorkspaceMemory ?? true,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -565,6 +574,8 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   }
   // v2：project 工作区派生的总开关（resolveProject=false 时退回模型显式传 project）。
   setProjectResolveEnabled(resolved.resolveProject)
+  // v0.30.2：非 git 工作区记忆策略（会话显式配置 > git 恒启用 / 非 git 走本设置）。
+  setNonGitMemoryPolicy(resolved.nonGitWorkspaceMemory)
   // prompt 语言（实例常量）：setPromptLang 一次，loader/bm25 内部取用——链路零透传。
   // 必须先于工具注册（tools.md 描述也吃这个语言）。未配置时运行时兜底 zh。
   setPromptLang(resolved.promptLang ?? 'zh')
@@ -1357,12 +1368,12 @@ function persistWindowIndex(): void {
 export { PLUGIN_SOURCE, REFLECT_MARKER }
 export { parseModelSpec, REFLECT_DELEGATE_MARKER, REFLECT_DONE_DELEGATE_MARKER, DREAM_DELEGATE_MARKER } from './delegate.js'
 export { collectDreamStates, headerOf, type PersistedSessionLike } from './dream-signal.js'
-export { isSessionMemoryEnabled, setSessionMemoryEnabled, resetSessionMemoryCache } from './session-state.js'
+export { isSessionMemoryEnabled, setSessionMemoryEnabled, setNonGitMemoryPolicy, getNonGitMemoryPolicy, resetSessionMemoryCache } from './session-state.js'
 export { MemoryDb, memoryDbPath, getDb, closeAllDbs, LEVELS, newId, PROJECT_SUBCATEGORIES, projectList, projectCovers, projectLabel, relativeTime, isGlobalProject, globalProjectMarker, GLOBAL_PROJECT_CANON, getCentralDbPath, getCentralSessionsDir } from './db.js'
 export { migrateLegacy } from './migrate.js'
 export { isCentralMigrated, migrateToCentral, migrateLegacyPath, resolveLegacyDb, type LegacyMigrateResult } from './migrate-central.js'
 export { buildHitInjection, buildInjection, buildReinjection, buildProjectSectionText, readSeen, markSearched, markAccessed, readInjected, markInjected, markProjectQueried, readProjectQueried, markWritten, readWritten, markReinjectPending, clearReinjectPending, isReinjectPending, MAX_REINJECT_PROJECTS, MAX_REINJECT_WRITTEN, sessionsFile, getCurrentProject, setCurrentProject, releaseSeen } from './inject.js'
-export { resolveProjectId, normalizeGitUrl, probeGit, readOriginUrl, setProjectResolveEnabled, clearProjectResolveCache } from './resolve.js'
+export { resolveProjectId, normalizeGitUrl, probeGit, readOriginUrl, isGitWorkspace, setProjectResolveEnabled, isProjectResolveEnabled, clearProjectResolveCache } from './resolve.js'
 export { buildReflectMessage, consecutiveToolSteps, scanTurn } from './reflect.js'
 export { tokenize, stemEn, search, findSimilar, topicDrift, recencyWeight } from './bm25.js'
 export { fillTemplate, keyedValue, resolveSlotText, setPromptLang, getPromptLang, DEFAULT_LANG, SLOTS } from './prompt-loader.js'

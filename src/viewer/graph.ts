@@ -28,6 +28,8 @@ export interface GraphInput {
   title: string
   memories: MemoryDto[]
   footprints?: SessionsDto['sessions']
+  /** 项目映射表 id→display_name（v0.30.1 星图项目枢纽显示短名）。 */
+  displays?: ReadonlyMap<string, string>
 }
 
 export interface GraphOptions {
@@ -92,12 +94,13 @@ export function buildGraph(inputs: readonly GraphInput[], opts: GraphOptions): G
     if (key === '') continue
     projectCount.set(key, (projectCount.get(key) ?? 0) + 1)
   }
+  const displays = inputs[0]?.displays
   for (const [name, count] of projectCount) {
     nodes.set(`p:${name}`, {
       id: `p:${name}`,
       type: 'project',
       level: 'project',
-      label: name,
+      label: displays?.get(name) ?? name,
       content: `${count} 条记忆`,
       degree: 0,
       cluster: name,

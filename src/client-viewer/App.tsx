@@ -226,7 +226,7 @@ export function MemoryViewerPanel(props: MemoryViewerPanelProps): ReactNode {
               onChange: (e: { target: { value: string } }) => setProjectSel(e.target.value),
             },
             h('option', { key: '', value: '' }, '全部项目'),
-            projSummaries.map((p) => h('option', { key: p.name, value: p.name }, p.name)),
+            projSummaries.map((p) => h('option', { key: p.name, value: p.name }, p.display)),
           )
         : null,
       scope !== 'starmap'
@@ -309,7 +309,28 @@ export function GlobalView({
           : h(
               'div',
               { className: 'mmv-grid2' },
-              projSummaries.map((p) => h(ProjectCard, { key: p.name, p, onOpen: () => onOpenProject(p.name) })),
+              projSummaries.map((p) =>
+                h(ProjectCard, {
+                  key: p.name,
+                  p,
+                  onOpen: () => onOpenProject(p.name),
+                  onRename: () => {
+                    const next = window.prompt('项目展示名（只改显示，记忆归属不变）：', p.display)
+                    if (next === null) return
+                    const name = next.trim()
+                    if (name === '' || name === p.display) return
+                    void (async () => {
+                      try {
+                        await viewerApi.renameProject(wsPath, p.name, name)
+                        const d = await viewerApi.projects(wsPath)
+                        setProjSummaries(d.projects)
+                      } catch (e) {
+                        setError(e instanceof ViewerApiError ? e.message : String(e))
+                      }
+                    })()
+                  },
+                }),
+              ),
             ),
         h('div', { className: 'mmv-sect', style: { marginTop: 16 } }, '健康检查', h('em', null, '点开即刻过滤到对应条目（在项目视图里看）')),
         h(
@@ -365,7 +386,7 @@ export function GlobalView({
   )
 }
 
-function ProjectCard({ p, onOpen }: { p: ProjectSummary; onOpen: () => void }): ReactNode {
+function ProjectCard({ p, onOpen, onRename }: { p: ProjectSummary; onOpen: () => void; onRename: () => void }): ReactNode {
   const total = p.total
   const counts = p.counts
   return h(
@@ -374,7 +395,16 @@ function ProjectCard({ p, onOpen }: { p: ProjectSummary; onOpen: () => void }): 
     h(
       'div',
       { className: 't' },
-      h('b', null, p.name),
+      h('b', null, p.display),
+      h('button', {
+        className: 'mmv-rename',
+        title: '改展示名（记忆归属不变）',
+        style: { marginLeft: 8, padding: '1px 6px', borderRadius: 4, border: '1px solid #8884', background: 'transparent', cursor: 'pointer', fontSize: 12 },
+        onClick: (e: { stopPropagation: () => void }) => {
+          e.stopPropagation()
+          onRename()
+        },
+      }, '✎'),
     ),
     h('div', { className: 'p' }, 'project 维度'),
     h(LevelBar, { counts }),

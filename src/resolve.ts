@@ -173,3 +173,17 @@ export function resolveProjectId(ws: string): ResolvedProject | null {
   cache.set(key, out)
   return out
 }
+
+/**
+ * 工作区是否是 git 项目（沿 cwd 向上能找到 .git，含无 remote 的本地仓库）。
+ * 与 v2 id 派生解耦：不依赖 enabled 开关、不走缓存——供会话记忆开关的
+ * 「git 恒启用 / 非 git 走设置」判定用（每次直探，fs 代价可忽略）。
+ */
+export function isGitWorkspace(ws: string): boolean {
+  if (!ws) return false
+  try {
+    return probeGit(ws) !== null
+  } catch {
+    return false
+  }
+}

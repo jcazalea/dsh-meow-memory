@@ -11,13 +11,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { buildGraph, GRAPH_DEFAULT_THRESHOLD, GRAPH_DEFAULT_TOPK } from './graph.js'
 import { findSimilar } from '../bm25.js'
 import { buildOverview, projectSummaries, queryMemories, unlabeledCounts } from './aggregate.js'
 import { etagOf, metaOf, readJsonBody, writeError, writeOk } from './http.js'
 import { ViewerRepository, type AllowedWorkspace } from './repository.js'
 import { migrateLegacyPath } from '../migrate-central.js'
-import { getCentralSessionsDir } from '../db.js'
+import { getCentralDbPath, getCentralSessionsDir } from '../db.js'
 import type { DreamsDto, GraphEdgeType, MemoriesDto, MemoryDto, OverviewDto, ProjectsDto, SessionsDto, ViewerLevel } from './types.js'
 import { VIEWER_LEVELS } from './types.js'
 
@@ -111,6 +112,9 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
       if (path === '/migrate-old' && method !== 'POST') {
         return fail(405, 'method-not-allowed', '迁移端点仅支持 POST')
       }
+      if (path === '/projects/rename' && method !== 'POST') {
+        return fail(405, 'method-not-allowed', '改名端点仅支持 POST')
+      }
       if (method !== 'GET' && method !== 'HEAD') {
         if (path === '/migrate-old') {
           let body: { path?: unknown } = {}
@@ -126,6 +130,40 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
             return writeOk(res, result, metaOf(`migrate-${Date.now()}-${p.length}`), req)
           } catch (e) {
             return fail(500, 'internal-error', `迁移失败: ${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
+        if (path === '/projects/rename') {
+          let body: { workspace?: unknown; id?: unknown; display?: unknown } = {}
+          try {
+            body = (await readJsonBody(req)) as { workspace?: unknown; id?: unknown; display?: unknown }
+          } catch {
+            return fail(400, 'bad-request', '请求体必须是 JSON')
+          }
+          const wsPath = typeof body.workspace === 'string' ? body.workspace.trim() : ''
+          if (wsPath === '') return fail(400, 'bad-request', 'workspace 必填')
+          const ws = repo.resolve(allowed, wsPath)
+          if (ws === undefined) return fail(403, 'not-allowlisted', '该工作区不在白名单内')
+          const id = typeof body.id === 'string' ? body.id.trim() : ''
+          const display = typeof body.display === 'string' ? body.display.trim() : ''
+          if (id === '' || display === '') return fail(400, 'bad-request', 'id 与 display 必填')
+          // 写操作（v0.30.1 项目别名）：只改 projects 表的 display_name，不碰记忆表；
+          // 不复用 getDb（防建表/迁移），直接可写打开中央库；老库无 projects 表 → 404。
+          try {
+            const w = new DatabaseSync(getCentralDbPath(ws.path), { readOnly: false })
+            try {
+              w.exec('PRAGMA busy_timeout = 5000')
+              const has = (w.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'projects'`).get() as { name: string } | undefined) !== undefined
+              if (!has) return fail(404, 'not-found', '该库尚无项目映射表（旧库未升级）')
+              const clash = w.prepare('SELECT id FROM projects WHERE display_name = ? AND id != ?').get(display, id) as { id: string } | undefined
+              if (clash) return fail(409, 'conflict', `展示名「${display}」已被 ${clash.id} 占用`)
+              const res = w.prepare('UPDATE projects SET display_name = ?, updated_at = ? WHERE id = ?').run(display, Date.now(), id)
+              if (res.changes === 0) return fail(404, 'not-found', `项目不存在：${id}`)
+              return writeOk(res, { id, display }, metaOf(`rename-${Date.now()}-${id.length}`), req)
+            } finally {
+              w.close()
+            }
+          } catch (e) {
+            return fail(500, 'internal-error', `改名失败: ${e instanceof Error ? e.message : String(e)}`)
           }
         }
         return fail(405, 'method-not-allowed', `不支持的请求方法：${method}`)
@@ -352,6 +390,7 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
             title: ws.title,
             memories: reader.listAll().filter((m) => m.status !== 'archived' || m.importance >= 3),
             footprints: reader.sessionsFootprint(deps.dir),
+            displays: reader.projectDisplays(),
           })
         }
         const data = buildGraph(inputs, {

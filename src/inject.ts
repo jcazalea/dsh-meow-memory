@@ -283,24 +283,24 @@ function buildInjectionBody(
 
   // 记忆导引：当前项目 + 项目清单（正文/标题一律自取，不列）。
   // v2：project 由工作区派生（git 地址/路径），首轮已由解析器锚定 currentProject；
-  // 清单保留供 memory_project 显式查阅其它项目。
-  const projectNames = db.listProjectNames()
+  // v0.30.1：展示统一走项目映射表 display_name（可读短名），清单保留供 memory_project 显式查阅。
+  const projectDisplays = db.listProjectDisplays()
   const max = o.titleMax
   const trunc = (n: string): string => (n.length > max ? n.slice(0, max) + '…' : n)
   if (currentProject) {
     lines.push(lbl('inject.sectionFormat', { label: lbl('inject.guide') }))
-    lines.push(lbl('inject.guideCurrentProject', { name: trunc(currentProject) }))
+    lines.push(lbl('inject.guideCurrentProject', { name: trunc(db.displayNameOf(currentProject)) }))
     lines.push(lbl('inject.guideSearchLine'))
     lines.push(lbl('inject.guideProjectLine'))
-    if (projectNames.length > 0) {
-      lines.push(lbl('inject.guideProjects', { list: projectNames.map(trunc).join(' / ') }))
+    if (projectDisplays.length > 0) {
+      lines.push(lbl('inject.guideProjects', { list: projectDisplays.map((p) => trunc(p.display_name)).join(' / ') }))
     }
     lines.push('')
-  } else if (projectNames.length > 0) {
+  } else if (projectDisplays.length > 0) {
     lines.push(lbl('inject.sectionFormat', { label: lbl('inject.guide') }))
     lines.push(lbl('inject.guideSearchLine'))
     lines.push(lbl('inject.guideProjectLine'))
-    lines.push(lbl('inject.guideProjects', { list: projectNames.map(trunc).join(' / ') }))
+    lines.push(lbl('inject.guideProjects', { list: projectDisplays.map((p) => trunc(p.display_name)).join(' / ') }))
     lines.push('')
   }
 

@@ -66,6 +66,10 @@ import {
   isSessionMemoryEnabled,
   setSessionMemoryEnabled,
   resetSessionMemoryCache,
+  setNonGitMemoryPolicy,
+  getNonGitMemoryPolicy,
+  isGitWorkspace,
+  isProjectResolveEnabled,
 } from './lib/index.js'
 
 let passed = 0
@@ -679,6 +683,8 @@ db2.insert({ level: 'fact', content: '多项目条目', project: 'meow-fold,meow
 check('project names expand multi-value', db2.listProjectNames().includes('meow-fold') && db2.listProjectNames().includes('meow-smooth'))
 // 导引 topic 带 project 归属
 db2.insert({ level: 'topic', content: '【起因】x【经过】y【结果】z', title: '记忆插件重构', project: 'meow-memory', created_at: Date.now() })
+// v0.30.1：生产写入经 memory_remember 自动注册映射表；测试直插 db.insert 绕过它 → 补一次注册
+db2.registerProjects(db2.listProjectNames())
 const inj = buildInjection(db2, ws2, 'test-session-1', '3081 现在什么状态？', { hitTopK: 3 }, ws2)
 check('injection produced', inj !== null)
 if (inj) {
@@ -1094,6 +1100,24 @@ check('guide declares current project', injCur !== null && injCur.text.includes(
 // 未锚定会话不声明（兼容旧行为）
 const injNoCur = buildInjection(db2, ws2, 's-ws-nocur', '', {}, ws2)
 check('guide omits current project when unanchored', injNoCur === null || !injNoCur.text.includes('当前项目：'))
+
+// ── v0.30.1 项目映射表：display_name 生成 / 改名 / 回退 ──
+db2.registerProjects(['github.com/jcazalea/dsh-meow-memory', '/home/azalea/WorkSpace/azalea/azalea-video', 'logical-name'])
+check('registry display = repo basename', db2.displayNameOf('github.com/jcazalea/dsh-meow-memory') === 'dsh-meow-memory')
+check('registry display = path basename', db2.displayNameOf('/home/azalea/WorkSpace/azalea/azalea-video') === 'azalea-video')
+check('registry keeps logical name', db2.displayNameOf('logical-name') === 'logical-name')
+check('registry display backfill on upgrade', db2.listProjectDisplays().some((p) => p.id === 'meow-eyes' && p.display_name === 'meow-eyes'))
+// display 冲突：同名 repo 不同 owner → 加 owner 前缀
+db2.registerProjects(['github.com/other/dsh-meow-memory'])
+check('registry disambiguates same-name repos', db2.displayNameOf('github.com/other/dsh-meow-memory') === 'other/dsh-meow-memory')
+// 改名（别名）：只改 display_name
+check('registry rename ok', db2.renameProject('logical-name', '我的别名') === true)
+check('registry display follows rename', db2.displayNameOf('logical-name') === '我的别名')
+check('registry rename rejects clash', db2.renameProject('logical-name', 'dsh-meow-memory') === false)
+// 未注册 id 回退原值
+check('registry fallback for unknown id', db2.displayNameOf('zzz-not-registered') === 'zzz-not-registered')
+// 反查：display_name → id（memory_project 参数兼容）
+check('registry id by display', db2.projectIdByDisplay('我的别名') === 'logical-name')
 
 // 命中基于 keywords 而非全文：content 含词但 keywords 不含 → 不命中（防噪音）
 const noiseId = db2.insert({ level: 'fact', content: '这段话的全文里出现了测试两个字但关键词是别的', project: null }).id
@@ -1681,24 +1705,49 @@ rmSync(ctxOffDir, { recursive: true, force: true })
   const wsS = mkdtempSync(join(tmpdir(), 'mm-sess-toggle-'))
   const dbS = getDb(wsS, wsS)
 
-  // ── db 层：无记录=启用；禁用→启用 往返 ──
-  check('session_state default enabled (no record)', dbS.getSessionMemoryEnabled('win-none') === true)
+  // ── db 层：三态（v0.30.2）——无记录=未显式配置；禁用→启用 往返 ──
+  check('session_state no record = no explicit', dbS.getSessionMemoryExplicit('win-none') === undefined)
   dbS.setSessionMemoryEnabled('win-a', false)
-  check('session_state disable persists', dbS.getSessionMemoryEnabled('win-a') === false)
+  check('session_state disable persists', dbS.getSessionMemoryExplicit('win-a') === false)
   check('session_state list contains disabled', dbS.listDisabledSessions().some((r) => r.session_id === 'win-a'))
   dbS.setSessionMemoryEnabled('win-a', true)
-  check('session_state re-enable deletes row', dbS.getSessionMemoryEnabled('win-a') === true
+  check('session_state re-enable stores explicit 1', dbS.getSessionMemoryExplicit('win-a') === true
     && !dbS.listDisabledSessions().some((r) => r.session_id === 'win-a'))
 
   // ── session-state 缓存层：读库默认 / 写后立即可见 / reset 回库 ──
   resetSessionMemoryCache()
+  // wsS 是非 git 临时目录：策略默认 true → 无显式配置 = 启用
   check('session-state cache reads db default', isSessionMemoryEnabled(wsS, 'win-b', wsS) === true)
   setSessionMemoryEnabled(wsS, 'win-b', false, wsS)
   check('session-state cache reflects set', isSessionMemoryEnabled(wsS, 'win-b', wsS) === false)
-  dbS.setSessionMemoryEnabled('win-b', true) // 模拟跨实例直改库
+  dbS.setSessionMemoryEnabled('win-b', true) // 模拟跨实例直改库（显式 1）
   check('session-state cache stale within TTL', isSessionMemoryEnabled(wsS, 'win-b', wsS) === false)
   resetSessionMemoryCache()
   check('session-state reset reloads db', isSessionMemoryEnabled(wsS, 'win-b', wsS) === true)
+
+  // ── v0.30.2 生效值优先级：会话显式配置 > git 恒启用 / 非 git 走策略 ──
+  {
+    const wsGit = mkdtempSync(join(tmpdir(), 'mm-git-ws-'))
+    mkdirSync(join(wsGit, '.git'), { recursive: true }) // 探到 .git 即 git 项目（含无 remote）
+    check('isGitWorkspace true for .git dir', isGitWorkspace(wsGit) === true)
+    check('isGitWorkspace false for plain dir', isGitWorkspace(wsS) === false)
+    // 策略=false：非 git 无显式 → 禁用；git 无显式 → 恒启用
+    setNonGitMemoryPolicy(false)
+    resetSessionMemoryCache()
+    check('policy false disables non-git ws', isSessionMemoryEnabled(wsS, 'pol-nongit', wsS) === false)
+    check('git ws stays enabled with policy false', isSessionMemoryEnabled(wsGit, 'pol-git', wsGit) === true)
+    // 显式配置覆盖策略（双向）
+    setSessionMemoryEnabled(wsS, 'pol-nongit', true, wsS)
+    check('explicit on overrides policy false', isSessionMemoryEnabled(wsS, 'pol-nongit', wsS) === true)
+    setSessionMemoryEnabled(wsGit, 'pol-git', false, wsGit)
+    check('explicit off overrides git default', isSessionMemoryEnabled(wsGit, 'pol-git', wsGit) === false)
+    // 策略恢复 true：非 git 无显式 → 启用
+    setNonGitMemoryPolicy(true)
+    resetSessionMemoryCache()
+    check('policy true re-enables non-git ws', isSessionMemoryEnabled(wsS, 'pol-nongit2', wsS) === true)
+    check('policy getter reflects set', getNonGitMemoryPolicy() === true)
+    rmSync(wsGit, { recursive: true, force: true })
+  }
 
   // ── 工具门禁：禁用会话调 memory_search 抛错；恢复后可用 ──
   const gateSearch = tools.find((t) => t.name === 'memory_search')
@@ -1752,6 +1801,25 @@ rmSync(ctxOffDir, { recursive: true, force: true })
   dbS.close()
   dbD2.close()
   rmSync(wsS, { recursive: true, force: true })
+
+  // ── v0.30.2 回归：resolveConfig 曾漏回 resolveProject（接口有声明、运行时恒
+  //    undefined → 生产环境派生开关=关、首轮锚定被跳过）；apply 默认配置应打开。 ──
+  {
+    const fixCtx = makeCtx()
+    const fixCtxDir = mkdtempSync(join(tmpdir(), 'mm-resfix-'))
+    await apply(fixCtx.ctx, { enabled: true, projectDir: fixCtxDir, promptLang: 'zh' })
+    check('apply default config enables project resolve', isProjectResolveEnabled() === true)
+    // 显式 resolveProject:false 退回关闭
+    await apply(fixCtx.ctx, { enabled: true, projectDir: fixCtxDir, promptLang: 'zh', resolveProject: false })
+    check('apply resolveProject:false disables resolve', isProjectResolveEnabled() === false)
+    // 非 git 策略从配置灌入（默认 true；显式 false 生效）
+    check('apply default non-git policy true', getNonGitMemoryPolicy() === true)
+    await apply(fixCtx.ctx, { enabled: true, projectDir: fixCtxDir, promptLang: 'zh', nonGitWorkspaceMemory: false })
+    check('apply nonGitWorkspaceMemory:false sets policy', getNonGitMemoryPolicy() === false)
+    await apply(fixCtx.ctx, { enabled: true, projectDir: fixCtxDir, promptLang: 'zh' })
+    check('apply default restores non-git policy', getNonGitMemoryPolicy() === true)
+    rmSync(fixCtxDir, { recursive: true, force: true })
+  }
   rmSync(wsD2, { recursive: true, force: true })
 }
 

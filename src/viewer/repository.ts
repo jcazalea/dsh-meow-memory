@@ -239,6 +239,14 @@ export class ViewerReader {
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
   }
 
+  /** 项目映射表（v0.30.1）：id → display_name；老库无 projects 表时返回空映射（展示回退原值）。 */
+  projectDisplays(): Map<string, string> {
+    const out = new Map<string, string>()
+    if (!this.has('projects')) return out
+    for (const r of this.all<{ id: string; display_name: string }>('SELECT id, display_name FROM projects')) out.set(r.id, r.display_name)
+    return out
+  }
+
   /** 该工作区是否含「全局」标记条目（全局视图的"全局条目"区）。 */
   globalEntries(): MemoryDto[] {
     return this.listAll().filter((m) => m.project !== null && isGlobalProject(m.project))

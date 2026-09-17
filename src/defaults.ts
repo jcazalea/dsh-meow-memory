@@ -25,6 +25,8 @@ export const CONFIG_DEFAULTS = {
   projectDir: '.dsh-meow',
   hitTopK: 2,
   titleMax: 40,
+  resolveProject: true,
+  nonGitWorkspaceMemory: true,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,

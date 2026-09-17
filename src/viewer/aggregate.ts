@@ -104,6 +104,7 @@ export function queryMemories(reader: ViewerReader, rows: readonly MemoryDto[], 
 /** 项目分组摘要（memory_project 的数据面）。 */
 export function projectSummaries(reader: ViewerReader): ProjectSummary[] {
   const rows = reader.listAll()
+  const displays = reader.projectDisplays()
   const byProject = new Map<string, MemoryDto[]>()
   for (const m of rows) {
     if (m.project === null || isGlobalProject(m.project)) continue
@@ -129,7 +130,7 @@ export function projectSummaries(reader: ViewerReader): ProjectSummary[] {
       else archived++
       lastUpdatedAt = Math.max(lastUpdatedAt ?? 0, m.updatedAt)
     }
-    out.push({ name, total: list.length, active, stale, archived, counts, lastUpdatedAt, bySubcategory })
+    out.push({ name, display: displays.get(name) ?? name, total: list.length, active, stale, archived, counts, lastUpdatedAt, bySubcategory })
   }
   return out.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
 }

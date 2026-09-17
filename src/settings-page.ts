@@ -65,6 +65,7 @@ const FIELDS: GroupSpec[] = [
     title: '基础',
     fields: [
       { key: 'enabled', label: '总开关', type: 'bool', hint: '关闭后注入、反思、记忆工具全部停用' },
+      { key: 'nonGitWorkspaceMemory', label: '非 git 工作区记忆', type: 'bool', hint: 'git 项目恒启用记忆；非 git 工作区（无 .git 的目录）默认是否启用。会话按钮的手动开关始终优先于本设置' },
       { key: 'projectDir', label: '记忆目录', type: 'str', hint: '相对工作区的数据目录', placeholder: '.dsh-meow' },
       { key: 'autoMigrate', label: '自动迁移旧库', type: 'bool', hint: '首次打开 v1 库时自动迁移 PROJECT.md' },
     ],

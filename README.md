@@ -160,6 +160,9 @@ dsh plugin --profile web remove meow-memory
   config:
     enabled: true          # 总开关
     projectDir: '.dsh-meow' # 中央库目录（默认 ~/.dsh-meow/memory.db；填绝对路径则用该目录）
+    resolveProject: true   # v2：project 由工作区派生（git 地址/路径）
+    nonGitWorkspaceMemory: true # 非 git 工作区（无 .git 的目录）默认是否启用记忆；git 项目恒启用。
+                          # 会话按钮（composer「记忆」）的手动开关始终优先于本设置（三态：显式开/关/未配置）
     promptLang: 'zh'       # ⚠️ 首次使用建议显式配置（见下方说明）
     hitTopK: 2             # 每条用户消息关键词命中的条目数上限（fact/lesson/rules/topic）
     reflect: true          # 连续 ≥reflectTurns 轮工具调用后自动反思
@@ -290,6 +293,10 @@ python3 scripts/project-admin.py mv foo bar --yes    # 改名（同名已存在�
 - **写入**：`memory_remember` 的 `project` 参数可选，缺省 = 当前工作区解析 id；显式传且与当前项目不一致时**自动改写为当前项目并返回 `note`**；「全局」通道保留（跨项目准则/用户偏好）。会话锚定在首轮由解析器自动设置，工具调用不再改变锚定（`memory_project` 不传参数即查当前项目）。
 - **旧数据**：既有逻辑名（`femwa`、`meow-memory` 等）保持原样，升级后新记忆走新 id（双轨并存，暂不迁移；可用 `project-admin.py mv` 手工合并）。
 - 开关：`apply({ resolveProject: false })` 退回「模型显式传 project」模式。
+
+**项目映射表（v0.30.1）**：id 由工作区派生后，展示不再裸奔长字符串——中央库新增 `projects` 表（`id ↔ display_name ↔ kind ↔ origin`），记忆表 `project` 列存 id（=映射表主键），面板/导引/星图统一显示 `display_name`（git 取 repo 末段、路径取目录末段；同名冲突自动加 owner/上级前缀去重）。自动注册：`memory_remember` 写入即登记，库升级时从现存值幂等回填；「全局」/「未标记」不建行。项目可起别名（只改展示名、记忆条目不搬）：
+- 脚本：`python3 scripts/project-admin.py rename <id> <新名>`（`--dry-run` 预览）
+- 面板：项目卡片标题旁「✎」按钮（`POST /meow-memory/api/projects/rename`，白名单校验，只写 `projects` 表不碰记忆数据）
 
 配套两个只读诊断脚本：
 

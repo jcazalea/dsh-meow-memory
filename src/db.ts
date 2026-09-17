@@ -111,6 +111,23 @@ export function projectLabel(field: string | null): string {
   return projectList(field).join('/')
 }
 
+/** display_name 自动生成：取 id 末段（git repo 名 / 路径末目录）；与已注册展示名冲突时向前缀扩展（git 加 owner、路径加上级）直到唯一。 */
+export function suggestDisplayName(id: string, taken: Set<string>): string {
+  const parts = id.split(/[/\\]+/).filter(Boolean)
+  for (let k = parts.length - 1; k >= 0; k--) {
+    const cand = parts.slice(k).join('/')
+    if (!taken.has(cand)) return cand
+  }
+  return id
+}
+
+/** 派生 id 的来源分类：路径（绝对路径/盘符）| git（URL/SCP/内部 host/path）| logical（自定义名）。 */
+export function projectKindOf(id: string): string {
+  if (/^[A-Za-z]:[\\/]/.test(id) || id.startsWith('/')) return 'path'
+  if (id.includes('://') || /^[^/@\s]+@[^:\s]+:/.test(id) || /^[^/]+\//.test(id)) return 'git'
+  return 'logical'
+}
+
 export interface MemoryRow {
   id: string
   level: Level
@@ -283,6 +300,27 @@ export class MemoryDb {
     if (wCols.has('dream_pending')) {
       this.db.exec(`UPDATE windows SET dream_owner = 'legacy-pending', dream_started_at = 0, dream_progress_at = 0, dream_group_idx = 0, dream_T = last_event_time WHERE dream_pending = 1 AND dream_owner IS NULL`)
     }
+    // 项目映射表（v0.30.1）：id（=记忆表 project 值）↔ display_name（展示用短名）。
+    // 展示友好 + 项目别名 + 未来 id 变更（路径迁移）的承接结构；全局/未标记不建行。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'logical',
+      origin TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`)
+    this.backfillProjects()
+  }
+
+  /** 从七层表现有 project 值幂等回填映射表（新库空表零开销；旧库升级时一次注册全部唯一 id）。 */
+  private backfillProjects(): void {
+    const ids = new Set<string>()
+    for (const level of LEVELS) {
+      const rows = this.db.prepare(`SELECT project FROM ${level} WHERE project IS NOT NULL AND project != ''`).all() as Array<{ project: string }>
+      for (const r of rows) for (const n of projectList(r.project)) if (!isGlobalProject(n)) ids.add(n)
+    }
+    this.registerProjects([...ids])
   }
 
   /** 新库（memories 全空）判定：迁移只在库刚创建时执行一次。 */
@@ -449,6 +487,51 @@ export class MemoryDb {
       for (const r of rows) for (const n of projectList(r.project)) names.add(n)
     }
     return [...names].sort((a, b) => a.localeCompare(b))
+  }
+
+  /** 项目映射表（v0.30.1）：id ↔ display_name。记忆表 project 列存 id（=本表主键）；
+   *  展示（面板/导引/星图）统一走 display_name。 */
+  registerProjects(ids: string[]): void {
+    const now = Date.now()
+    const existing = new Set((this.db.prepare('SELECT id FROM projects').all() as Array<{ id: string }>).map((r) => r.id))
+    const fresh = [...new Set(ids.filter((id) => id && !isGlobalProject(id) && !existing.has(id)))]
+    if (fresh.length === 0) return
+    const taken = new Set((this.db.prepare('SELECT display_name FROM projects').all() as Array<{ display_name: string }>).map((r) => r.display_name))
+    const insert = this.db.prepare('INSERT INTO projects (id, display_name, kind, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    for (const id of fresh) {
+      const name = suggestDisplayName(id, taken)
+      taken.add(name)
+      insert.run(id, name, projectKindOf(id), id, now, now)
+    }
+  }
+
+  /** display_name → id 反查（memory_project 参数兼容 display_name）。 */
+  projectIdByDisplay(display: string): string | null {
+    if (!display) return null
+    const row = this.db.prepare('SELECT id FROM projects WHERE display_name = ?').get(display) as { id: string } | undefined
+    return row?.id ?? null
+  }
+
+  /** id → display_name；未注册（老库未回填/无映射）时回退 id 本身，展示不炸。 */
+  displayNameOf(id: string): string {
+    if (!id || isGlobalProject(id)) return id
+    const row = this.db.prepare('SELECT display_name FROM projects WHERE id = ?').get(id) as { display_name: string } | undefined
+    return row?.display_name ?? id
+  }
+
+  /** 全部注册项（导引/面板展示用）。 */
+  listProjectDisplays(): Array<{ id: string; display_name: string; kind: string }> {
+    return (this.db.prepare('SELECT id, display_name, kind FROM projects ORDER BY display_name').all() as Array<{ id: string; display_name: string; kind: string }>)
+  }
+
+  /** 项目别名：只改 display_name，记忆条目不搬。返回是否命中。 */
+  renameProject(id: string, display: string): boolean {
+    const name = display.trim()
+    if (!name) return false
+    const clash = this.db.prepare('SELECT id FROM projects WHERE display_name = ? AND id != ?').get(name, id) as { id: string } | undefined
+    if (clash) return false
+    const res = this.db.prepare('UPDATE projects SET display_name = ?, updated_at = ? WHERE id = ?').run(name, Date.now(), id)
+    return res.changes > 0
   }
 
   logDream(summary: string, changes: unknown, note = ''): void {
@@ -618,27 +701,26 @@ export class MemoryDb {
     return (this.db.prepare(`SELECT session_id FROM dream_skip`).all() as Array<{ session_id: string }>).map((r) => r.session_id)
   }
 
-  // ── session_state 会话级记忆开关表（v0.28.0：用户按会话启用/禁用记忆处理） ──
+  // ── session_state 会话级记忆开关表（v0.28.0：用户按会话启用/禁用记忆处理；
+  //    v0.30.2：改为三态——memory_enabled=1=显式启用 / 0=显式禁用 / 无记录=未显式
+  //    配置（生效值由 session-state 按「git 恒启用 / 非 git 走全局设置」推导）） ──
 
-  /** 读取某会话的记忆开关：无记录 = 启用（默认语义，向后兼容）。 */
-  getSessionMemoryEnabled(sessionId: string): boolean {
+  /** 读某会话的显式记忆开关：undefined = 无记录（用户未显式配置，走推导）。
+   *  注意与旧语义的区别：无记录不再恒等于启用。 */
+  getSessionMemoryExplicit(sessionId: string): boolean | undefined {
     const row = this.db.prepare(`SELECT memory_enabled FROM session_state WHERE session_id = ?`).get(sessionId) as
       | { memory_enabled?: number }
       | undefined
-    if (row === undefined) return true
+    if (row === undefined) return undefined
     return row.memory_enabled !== 0
   }
 
-  /** 设置某会话的记忆开关：enabled=true 删除记录（回到默认语义，表里只留禁用会话）。 */
+  /** 设置某会话的显式记忆开关：true/false 都落行（三态；显式值优先于工作区推导）。 */
   setSessionMemoryEnabled(sessionId: string, enabled: boolean): void {
-    if (enabled) {
-      this.db.prepare(`DELETE FROM session_state WHERE session_id = ?`).run(sessionId)
-    } else {
-      this.db
-        .prepare(`INSERT INTO session_state (session_id, memory_enabled, updated_at) VALUES (?, 0, ?)
-          ON CONFLICT(session_id) DO UPDATE SET memory_enabled = 0, updated_at = excluded.updated_at`)
-        .run(sessionId, Date.now())
-    }
+    this.db
+      .prepare(`INSERT INTO session_state (session_id, memory_enabled, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET memory_enabled = excluded.memory_enabled, updated_at = excluded.updated_at`)
+      .run(sessionId, enabled ? 1 : 0, Date.now())
   }
 
   /** 全部已禁用的会话（查看器/对账展示用）。 */
