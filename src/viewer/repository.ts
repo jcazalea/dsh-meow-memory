@@ -32,6 +32,7 @@ import type {
   MemoryDto,
   SessionsDto,
   ViewerLevel,
+  ViewerLogEntry,
   ViewerStatus,
   ViewerSubcategory,
   WorkspaceSummary,
@@ -327,6 +328,23 @@ export class ViewerReader {
       }
     }
     return out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+  }
+
+  /** 面板写操作留痕（viewer_log；v0.31.0 起面板可编辑/删除记忆）。
+   *  注意：不能靠 this.tables 快照守卫——viewer_log 是面板首次写时才惰性建表，
+   *  打开时快照里没有它；直接查询 + 私有 all() 的 try/catch fail-open（老库无表返回空）。 */
+  auditLog(limit: number): ViewerLogEntry[] {
+    return this.all<{ at: number; workspace: string; action: string; memory_id: string; level: string; summary: string | null }>(
+      `SELECT at, workspace, action, memory_id, level, summary FROM viewer_log ORDER BY at DESC LIMIT ?`,
+      Math.max(1, Math.min(500, limit)),
+    ).map((r) => ({
+      at: Number(r.at ?? 0),
+      workspace: String(r.workspace ?? ''),
+      action: r.action as ViewerLogEntry['action'],
+      id: String(r.memory_id ?? ''),
+      level: r.level as ViewerLogEntry['level'],
+      summary: String(r.summary ?? ''),
+    }))
   }
 
   /** 数据版本（跨库 ETag 的组成部分）：data_version + 各层计数 + 最大 updated_at。 */

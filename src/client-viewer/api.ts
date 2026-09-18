@@ -11,9 +11,12 @@ import type {
   GraphDto,
   MemoriesDto,
   MemoryDto,
+  MemoryPatchDto,
+  MemoryWriteResultDto,
   OverviewDto,
   ProjectsDto,
   SessionsDto,
+  ViewerLogDto,
   WorkspaceSummary,
 } from '../viewer/types.js'
 
@@ -136,4 +139,15 @@ export const viewerApi = {
   migrateLegacy: (path: string) => post<LegacyMigrateDto>('/migrate-old', { path }),
   /** 项目别名（v0.30.1）：改映射表 display_name，记忆条目不搬。 */
   renameProject: (workspace: string, id: string, display: string) => post<{ id: string; display: string }>('/projects/rename', { workspace, id, display }),
+  /** 修改记忆（v0.31.0）：按层门控字段更新；expectUpdatedAt 为乐观锁（409 冲突提示刷新）。 */
+  updateMemory: (workspace: string, id: string, patch: MemoryPatchDto, expectUpdatedAt?: number) =>
+    post<MemoryWriteResultDto>('/memory/update', { workspace, id, patch, expectUpdatedAt }),
+  /** 逻辑删除（无效记忆）：status → archived，可还原。 */
+  archiveMemory: (workspace: string, id: string) => post<MemoryWriteResultDto>('/memory/archive', { workspace, id }),
+  /** 还原：status → active。 */
+  restoreMemory: (workspace: string, id: string) => post<MemoryWriteResultDto>('/memory/restore', { workspace, id }),
+  /** 物理删除：彻底移除该条记忆（不可恢复，留审计痕迹）。 */
+  purgeMemory: (workspace: string, id: string) => post<MemoryWriteResultDto>('/memory/purge', { workspace, id }),
+  /** 面板写操作留痕（viewer_log）。 */
+  audit: (workspace: string, limit = 50, signal?: AbortSignal) => get<ViewerLogDto>('/audit', { workspace, limit }, signal),
 }

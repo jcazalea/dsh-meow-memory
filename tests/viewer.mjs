@@ -334,6 +334,101 @@ console.log('— 手动迁移旧库（POST /migrate-old） —')
   check('重复迁移 → no-old-db（原库已备份）', r5.json.data.status === 'no-old-db')
 }
 
+console.log('— 面板写操作（update / archive / restore / purge） —')
+{
+  // 夹具：专用条目（不污染既有断言）
+  const db = new MemoryDb(getCentralDbPath(centralDir))
+  const editFact = db.insert({ level: 'fact', content: '面板测试：可编辑条目', project: 'alpha', importance: 1, keywords: ['面板测试', '可编辑'] })
+  const purgeProj = db.insert({ level: 'project', content: '待物理删除的项目条目', project: 'purge-me', subcategory: 'overview', importance: 1, keywords: ['purge-me'] })
+  const editTopic = db.insert({ level: 'topic', content: '面板测试话题', project: 'beta', goal: '原目标', importance: 2, keywords: ['话题'] })
+  db.close()
+  const wsAEnc = encodeURIComponent(wsA)
+  // 防同毫秒竞态：insert 与首笔 update 若落在同一毫秒，after1 === before，
+  // 「updated_at 刷新 / 409 冲突 / no-op / 审计摘要」四断言会连锁失败——推一毫秒再打。
+  await new Promise((r) => setTimeout(r, 15))
+  const before = editFact.updated_at
+
+  // update：content/importance/keywords + 乐观锁
+  const r1 = await call('/meow-memory/api/memory/update', {
+    method: 'POST',
+    body: { workspace: wsA, id: editFact.id, expectUpdatedAt: before, patch: { content: '面板测试：已修改内容', importance: 4, keywords: ['新关键词', '面板'] } },
+  })
+  check('update：200 且 action=update', r1.status === 200 && r1.json?.data?.action === 'update', JSON.stringify(r1.json))
+  const after1 = r1.json?.data?.updatedAt
+  check('update：updated_at 刷新', after1 > before, `${before} -> ${after1}`)
+  const got1 = await call(`/meow-memory/api/memory?workspace=${wsAEnc}&id=${editFact.id}`)
+  const m1 = got1.json.data.memory
+  check(
+    'update：content/importance/keywords 生效',
+    m1.content === '面板测试：已修改内容' && m1.importance === 4 && m1.keywords.length === 2 && m1.keywords[0] === '新关键词',
+    JSON.stringify(m1),
+  )
+
+  // 乐观锁：expectUpdatedAt 过时 → 409 conflict
+  const r2 = await call('/meow-memory/api/memory/update', { method: 'POST', body: { workspace: wsA, id: editFact.id, expectUpdatedAt: before, patch: { content: 'x' } } })
+  check('update：expectUpdatedAt 不匹配 → 409 conflict', r2.status === 409 && r2.json?.error?.code === 'conflict', `status=${r2.status}`)
+
+  // 空 patch：200 no-op，updatedAt 不变
+  const r3 = await call('/meow-memory/api/memory/update', { method: 'POST', body: { workspace: wsA, id: editFact.id, patch: {} } })
+  check('update：空 patch no-op 200', r3.status === 200 && r3.json?.data?.updatedAt === after1)
+
+  // 按层门控：fact 层传 subcategory 被忽略、status 生效
+  const r4 = await call('/meow-memory/api/memory/update', { method: 'POST', body: { workspace: wsA, id: editFact.id, patch: { subcategory: 'todo', status: 'stale' } } })
+  check('update：fact 层 subcategory 忽略、status 生效', r4.status === 200 && r4.json?.data?.action === 'update')
+  const got4 = await call(`/meow-memory/api/memory?workspace=${wsAEnc}&id=${editFact.id}`)
+  check('update：门控结果正确（status=stale）', got4.json.data.memory.status === 'stale')
+
+  // topic 层 goal 编辑
+  const r5 = await call('/meow-memory/api/memory/update', { method: 'POST', body: { workspace: wsA, id: editTopic.id, patch: { goal: '新目标', content: '面板测试话题 v2' } } })
+  check('update：topic 层 goal 可编辑', r5.status === 200)
+  const got5 = await call(`/meow-memory/api/memory?workspace=${wsAEnc}&id=${editTopic.id}`)
+  check('update：goal 已更新', got5.json.data.memory.goal === '新目标')
+
+  // archive → 归档（逻辑删除），幂等
+  const r6 = await call('/meow-memory/api/memory/archive', { method: 'POST', body: { workspace: wsA, id: editFact.id } })
+  check('archive：200', r6.status === 200)
+  const got6 = await call(`/meow-memory/api/memory?workspace=${wsAEnc}&id=${editFact.id}`)
+  check('archive：status=archived', got6.json.data.memory.status === 'archived')
+  const r6b = await call('/meow-memory/api/memory/archive', { method: 'POST', body: { workspace: wsA, id: editFact.id } })
+  check('archive：重复归档幂等 200', r6b.status === 200)
+
+  // restore → 还原
+  const r7 = await call('/meow-memory/api/memory/restore', { method: 'POST', body: { workspace: wsA, id: editFact.id } })
+  check('restore：200', r7.status === 200)
+  const got7 = await call(`/meow-memory/api/memory?workspace=${wsAEnc}&id=${editFact.id}`)
+  check('restore：status=active', got7.json.data.memory.status === 'active')
+
+  // purge：彻底删除 + 孤儿项目映射清理
+  const r8 = await call('/meow-memory/api/memory/purge', { method: 'POST', body: { workspace: wsA, id: purgeProj.id } })
+  check('purge：200 且 action=purge', r8.status === 200 && r8.json?.data?.action === 'purge', JSON.stringify(r8.json))
+  const got8 = await call(`/meow-memory/api/memory?workspace=${wsAEnc}&id=${purgeProj.id}`)
+  check('purge：条目已彻底消失（404）', got8.status === 404)
+  const prjDb = new DatabaseSync(getCentralDbPath(centralDir))
+  const orphan = prjDb.prepare(`SELECT id FROM projects WHERE id = 'purge-me'`).get()
+  prjDb.close()
+  check('purge：孤儿项目映射行已清理', orphan === undefined)
+
+  // 边界
+  const b1 = await call('/meow-memory/api/memory/purge', { method: 'POST', body: { workspace: wsA } })
+  check('写操作缺 id → 400', b1.status === 400)
+  const b2 = await call('/meow-memory/api/memory/purge', { method: 'POST', body: { workspace: wsOutside, id: editFact.id } })
+  check('写操作非白名单工作区 → 403', b2.status === 403 && b2.json?.error?.code === 'not-allowlisted')
+  const b3 = await call('/meow-memory/api/memory/update', { method: 'POST', body: { workspace: wsA, id: 'no-such-id-000000', patch: { content: 'x' } } })
+  check('写操作未知 id → 404', b3.status === 404)
+  const b4 = await call('/meow-memory/api/memory/update')
+  check('GET /memory/update → 405', b4.status === 405 && b4.json?.error?.code === 'method-not-allowed')
+  const b5 = await call('/meow-memory/api/memory/purge', { method: 'POST', body: { workspace: wsA, id: purgeProj.id } })
+  check('已删除条目再 purge → 404', b5.status === 404)
+
+  // audit：留痕包含四种动作
+  const au = await call(`/meow-memory/api/audit?workspace=${wsAEnc}&limit=100`)
+  const actions = au.json.data.log.map((l) => l.action)
+  check('audit：端点可用且按时间倒序', au.status === 200 && au.json.data.log.length > 0 && au.json.data.log[0].at >= au.json.data.log[au.json.data.log.length - 1].at)
+  check('audit：含全部四种动作', ['update', 'archive', 'restore', 'purge'].every((a) => actions.includes(a)), JSON.stringify(actions.slice(0, 12)))
+  const auditEntry = au.json.data.log.find((l) => l.id === editFact.id && l.action === 'update' && l.summary.includes('content'))
+  check('audit：update 留痕带字段摘要', auditEntry !== undefined && auditEntry.summary.includes('importance'), auditEntry?.summary ?? '(无)')
+}
+
 console.log('— 纯计算层直调（不走 HTTP） —')
 {
   const repo = new ViewerRepository(centralDir)

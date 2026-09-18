@@ -1,7 +1,7 @@
 {
   "name": "meow-memory",
-  "version": "0.30.2",
-  "description": "Cross-session project memory for DeepSeek Harness: seven-layer SQLite memory, first-turn snapshot injection, per-message keyword hits, memory_remember/search/project tools, automatic reflection with reflection-fold UI, idle-triggered dream consolidation (peak-hour suppressed), and a read-only memory viewer panel (global / workspace / star map).",
+  "version": "0.31.0",
+  "description": "Cross-session project memory for DeepSeek Harness: seven-layer SQLite memory, first-turn snapshot injection, per-message keyword hits, memory_remember/search/project tools, automatic reflection with reflection-fold UI, idle-triggered dream consolidation (peak-hour suppressed), and a memory viewer panel (global / workspace / star map) with in-panel edit / logical-delete / purge / restore writes.",
   "keywords": [
     "deepseek-harness",
     "dsh",

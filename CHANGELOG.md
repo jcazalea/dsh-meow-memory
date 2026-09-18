@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.31.0 (2026-09-18)
+
+### 记忆查看器写操作：修改 / 逻辑删除（归档）/ 物理删除 / 还原
+
+- **需求**（用户原话）：「现在这个可视化记忆面板的功能，只能查看记忆，无法操作记忆，需要新增修改记忆、删除记忆这两个功能」；删除语义用户拍板为**两个按钮**：「删除分为无效记忆(逻辑删除)、物理删除 两个按钮功能」。
+- **删除语义**：①无效记忆（逻辑删除）= `status → archived`，默认列表消失、`status: archived` 过滤器可找回、可一键「还原」（`status → active`）；②物理删除 = 彻底移除该行（不可恢复），仍留审计记录。物理删除是用户拍板新增能力，取代旧设计文档 §10 的「仅软删除」。
+- **host 数据面**：新增 `src/viewer/write.ts`（受控写助手，可单测）——`updateMemory / archiveMemory / restoreMemory / purgeMemory`。安全边界沿用 `/projects/rename` 先例：直接 `new DatabaseSync(中央库, {readOnly:false})` + `busy_timeout 5s`，**绝不调用 getDb()**（防建表/迁移）；按层门控与 `MemoryDb.update` 完全对齐（subcategory 仅 project、goal 仅 topic、corrected 仅 lesson、project 列七层皆有）；写操作只接受**完整 36 位 id**（前缀匹配有同毫秒歧义）。物理删除后顺带清理 `projects` 映射表孤儿行（项目 = 记忆的聚合投影）。
+- **新端点**：`POST /memory/update`（body `{workspace,id,expectUpdatedAt?,patch}`）、`POST /memory/archive`、`POST /memory/restore`、`POST /memory/purge`、`GET /audit`；`ApiErrorCode` 新增 `conflict`。**乐观锁**：update 带 `expectUpdatedAt`，与当前 `updated_at` 不符 → 409（前端提示「刚被其他会话/模型更新，已刷新」）。编辑字段白名单 `sanitizePatch`：未知字段一律丢弃，绝不经 body 直写 SQL。
+- **审计留痕**：新增 `viewer_log` 表（`CREATE TABLE IF NOT EXISTS` 幂等，惰性创建）——at/workspace/action(update|archive|restore|purge)/memory_id/level/summary；「整理留痕」tab 追加「面板操作留痕」区。注意：`ViewerReader` 打开时快照 tables，惰性建的表不能靠 `has()` 守卫读，auditLog 直接查询 + try/catch fail-open（老库无表返回空）。
+- **前端**：`api.ts` 新增 `updateMemory/archiveMemory/restoreMemory/purgeMemory/audit`；详情抽屉操作区 = 编辑 / 无效记忆（归档，archived 态显示「还原」）/ 物理删除 / 复制正文 / 复制 id；`EditModal` 浮层按层门控出字段（内容 textarea、重要性星标 1–5、关键词逗号分隔留空=不修改、状态、项目下拉仅限 未标记/全局/现有项目、subcategory 仅 project 层、goal 仅 topic 层、title 有值或 topic/project 层）。删除确认：归档用 `confirm`；物理删除用 `prompt` 输入「删除」二字。
+- **测试**：`tests/viewer.mjs` +25（update 各字段/按层门控/keywords 空=不变/updated_at 刷新/400/403/404/405/409、archive 幂等、restore、purge + 孤儿项目清理、audit 四种动作与摘要）。全量 478+98+45+37+16+24+22+13 全绿，`npm run check-viewer` 通过。UI 稿：`docs/mockups/05-edit-delete.svg/png`（render-05-edit-delete.mjs 可再生）。
+- **UI 反馈轮**（用户：「按钮不明显」「中间的记忆列表应该有滚动条，不应该全屏一起滚动」）：详情抽屉操作按钮改为醒目配色——编辑=实心主色（✎）、无效记忆（归档）=琥珀、物理删除=红色（✕）、还原=绿色（↩），与次要操作（复制正文/复制 id）分行；`.mmv-wsview` 改 `align-items:stretch` + `.mmv-pane.mid` 加 `overflow:auto;min-height:0`——记忆列表在面板内独立滚动，不再带动全屏滚动。
+- **UI 反馈轮 2**（用户：「复制id\复制正文后提示复制成功」「中间区域滚动时顶部搜索和状态过滤应该固定」「编辑弹窗支持 ESC 关闭」「关键词编辑区太小」「深色模式下状态/项目/子类下拉框颜色没跟随系统」）：复制正文/复制 id 点击后按钮变「✓ 已复制…」1.6s 回退；`.mmv-filters` 改 `position:sticky`（含主题底色，滚动列表不穿透）；EditModal 监听 keydown ESC 关闭（保存中不响应）；关键词由单行 input 改 3 行 textarea（逗号/中文逗号/换行皆可分隔）；`select.mmv-input` 显式给 `--dsw-alias-bg-base` 底色 + option 同色，跟随系统深色模式。
+- **注意**：改 lib 后需重启 dsh web 生效（profile link: 加载）；git push 需本地终端执行。
+
 ## v0.28.0 (2026-09-13)
 
 ### 会话级记忆开关：composer 输入框旁的「记忆」拨动开关（启用/禁用）

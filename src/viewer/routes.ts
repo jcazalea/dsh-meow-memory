@@ -19,7 +19,19 @@ import { etagOf, metaOf, readJsonBody, writeError, writeOk } from './http.js'
 import { ViewerRepository, type AllowedWorkspace } from './repository.js'
 import { migrateLegacyPath } from '../migrate-central.js'
 import { getCentralDbPath, getCentralSessionsDir } from '../db.js'
-import type { DreamsDto, GraphEdgeType, MemoriesDto, MemoryDto, OverviewDto, ProjectsDto, SessionsDto, ViewerLevel } from './types.js'
+import { archiveMemory, openCentralWritable, purgeMemory, restoreMemory, updateMemory, type WriteOutcome } from './write.js'
+import type {
+  DreamsDto,
+  GraphEdgeType,
+  MemoriesDto,
+  MemoryDto,
+  MemoryPatchDto,
+  OverviewDto,
+  ProjectsDto,
+  SessionsDto,
+  ViewerLevel,
+  ViewerLogDto,
+} from './types.js'
 import { VIEWER_LEVELS } from './types.js'
 
 export interface ViewerApiDeps {
@@ -48,6 +60,28 @@ function num(value: string | null, fallback: number): number {
   if (value === null || value.trim() === '') return fallback
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
+}
+
+/** 面板编辑补丁白名单：只允许已知字段，类型不符一律丢弃（绝不把 body 原样透传进 SQL）。 */
+function sanitizePatch(raw: unknown): MemoryPatchDto {
+  const patch: MemoryPatchDto = {}
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return patch
+  const o = raw as Record<string, unknown>
+  if (typeof o.content === 'string' && o.content.trim().length > 0) patch.content = o.content.trim()
+  if (typeof o.title === 'string') patch.title = o.title.trim()
+  if (typeof o.importance === 'number' && Number.isFinite(o.importance)) patch.importance = Math.round(o.importance)
+  if (Array.isArray(o.keywords)) {
+    const kw = o.keywords.map((k) => (typeof k === 'string' ? k.trim() : '')).filter((k) => k.length > 0)
+    patch.keywords = kw // 空数组 = 不更新（write.ts 内部按此语义处理）
+  }
+  if (typeof o.status === 'string' && ['active', 'archived', 'stale'].includes(o.status)) patch.status = o.status as MemoryPatchDto['status']
+  if (o.project === null || typeof o.project === 'string') patch.project = typeof o.project === 'string' ? o.project.trim() : null
+  if (typeof o.subcategory === 'string' && ['overview', 'structure', 'decisions', 'quotes', 'ops', 'todo'].includes(o.subcategory)) {
+    patch.subcategory = o.subcategory as MemoryPatchDto['subcategory']
+  }
+  if (typeof o.goal === 'string') patch.goal = o.goal.trim()
+  if (typeof o.corrected === 'boolean') patch.corrected = o.corrected
+  return patch
 }
 
 /** 只读某会话的痕迹文件（/api/context 用；v3 中央存储：sessions 在中央目录）。 */
@@ -107,6 +141,68 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
     const fail = (status: number, code: Parameters<typeof writeError>[2], message: string, partial: string[] = []): void =>
       writeError(res, status, code, message, missingWorkspaceMeta(partial))
 
+    /** 写端点（POST-only）统一方法校验。 */
+    const POST_ONLY = new Set(['/migrate-old', '/projects/rename', '/memory/update', '/memory/archive', '/memory/restore', '/memory/purge'])
+    if (POST_ONLY.has(path) && method !== 'POST') {
+      return fail(405, 'method-not-allowed', `该端点仅支持 POST：${path}`)
+    }
+
+    /** 白名单解析公共逻辑（POST body 版）。 */
+    const pickWs = (wsPathRaw: unknown): AllowedWorkspace | { error: 'bad-request' | 'not-allowlisted' } => {
+      const wsPath = typeof wsPathRaw === 'string' ? wsPathRaw.trim() : ''
+      if (wsPath === '') return { error: 'bad-request' }
+      const ws = repo.resolve(allowed, wsPath)
+      if (ws === undefined) return { error: 'not-allowlisted' }
+      return ws
+    }
+    const failWs = (p: ReturnType<typeof pickWs>): void => {
+      if ('error' in p) {
+        if (p.error === 'bad-request') fail(400, 'bad-request', 'workspace 必填')
+        else fail(403, 'not-allowlisted', '该工作区不在白名单内')
+      }
+    }
+
+    /** 面板记忆写操作（update/archive/restore/purge 共用流水线）。 */
+    const postMemory = async (req: IncomingMessage, res: ServerResponse, kind: 'update' | 'archive' | 'restore' | 'purge'): Promise<void> => {
+      let body: Record<string, unknown> = {}
+      try {
+        body = (await readJsonBody(req)) as Record<string, unknown>
+      } catch {
+        return fail(400, 'bad-request', '请求体必须是 JSON')
+      }
+      const wsP = pickWs(body.workspace)
+      if ('error' in wsP) return failWs(wsP)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if (id === '') return fail(400, 'bad-request', 'id 必填')
+      let db: ReturnType<typeof openCentralWritable>
+      try {
+        db = openCentralWritable(deps.dir)
+      } catch (e) {
+        return fail(500, 'internal-error', `无法打开中央库写入: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      try {
+        let outcome: WriteOutcome
+        if (kind === 'update') {
+          const patch = sanitizePatch(body.patch)
+          const expect = typeof body.expectUpdatedAt === 'number' ? body.expectUpdatedAt : undefined
+          outcome = updateMemory(db, wsP.path, id, patch, expect)
+        } else if (kind === 'archive') {
+          outcome = archiveMemory(db, wsP.path, id)
+        } else if (kind === 'restore') {
+          outcome = restoreMemory(db, wsP.path, id)
+        } else {
+          outcome = purgeMemory(db, wsP.path, id)
+        }
+        if (outcome.status === 'not-found') return fail(404, 'not-found', `未找到记忆 ${id}`)
+        if (outcome.status === 'conflict') {
+          return writeError(res, 409, 'conflict', `该记忆刚被其他会话/模型更新（updated_at=${outcome.currentUpdatedAt}），请刷新后重试`, missingWorkspaceMeta([]))
+        }
+        return writeOk(res, outcome.result, metaOf(`write-${kind}-${Date.now()}-${id.length}`), req)
+      } finally {
+        db.close()
+      }
+    }
+
     try {
       // 只读端点仅 GET/HEAD；唯一写端点 /migrate-old 仅 POST（面板「迁移旧库」手动触发）。
       if (path === '/migrate-old' && method !== 'POST') {
@@ -165,6 +261,9 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
           } catch (e) {
             return fail(500, 'internal-error', `改名失败: ${e instanceof Error ? e.message : String(e)}`)
           }
+        }
+        if (path === '/memory/update' || path === '/memory/archive' || path === '/memory/restore' || path === '/memory/purge') {
+          return postMemory(req, res, path.slice('/memory/'.length) as 'update' | 'archive' | 'restore' | 'purge')
         }
         return fail(405, 'method-not-allowed', `不支持的请求方法：${method}`)
       }
@@ -313,6 +412,17 @@ export function createViewerApi(deps: ViewerApiDeps): ViewerApi {
         if (reader === undefined) return fail(404, 'no-db', `该工作区没有记忆库：${p.ws.path}`)
         const data: SessionsDto = { sessions: publicFootprints(reader.sessionsFootprint(deps.dir)) }
         return writeOk(res, data, metaOf(etagOf([p.ws.path, data.sessions.length, data.sessions[0]?.updatedAt ?? 0])), req)
+      }
+
+      // ── /audit：面板写操作留痕（viewer_log；v0.31.0 面板可编辑/删除记忆） ──────
+      if (path === '/audit') {
+        const p = pick()
+        if ('error' in p) return p.error === 'bad-request' ? fail(400, 'bad-request', 'workspace 必填') : fail(403, 'not-allowlisted', '该工作区不在白名单内')
+        const reader = repo.reader(p.ws)
+        if (reader === undefined) return fail(404, 'no-db', `该工作区没有记忆库：${p.ws.path}`)
+        const limit = Math.max(1, Math.min(200, num(q.get('limit'), 50)))
+        const data: ViewerLogDto = { log: reader.auditLog(limit) }
+        return writeOk(res, data, metaOf(etagOf([p.ws.path, data.log.length, data.log[0]?.at ?? 0])), req)
       }
 
       // ── /similar：相关记忆（复用 bm25.findSimilar，与 memory_find_similar 同算法）

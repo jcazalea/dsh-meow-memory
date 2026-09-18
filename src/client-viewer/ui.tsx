@@ -20,6 +20,9 @@ export const VIEWER_CSS = `
 .mmv-spacer{flex:1}
 .mmv-input{height:28px;min-width:200px;background:color-mix(in srgb,currentColor 5%,transparent);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;color:inherit;padding:0 10px;font:inherit;font-size:12.5px}
 .mmv-input::placeholder{color:var(--dsw-alias-label-caption)}
+/* 原生 select 的底色不跟随系统主题（深色模式下默认白底）——显式给主题底色 */
+select.mmv-input{background:var(--dsw-alias-bg-base,#1a1b26);color:var(--dsw-alias-label-primary)}
+select.mmv-input option{background:var(--dsw-alias-bg-base,#1a1b26);color:var(--dsw-alias-label-primary)}
 .mmv-btn{border:1px solid var(--dsw-alias-border-l3);background:color-mix(in srgb,currentColor 4%,transparent);color:var(--dsw-alias-label-secondary);border-radius:8px;padding:4px 11px;font:inherit;font-size:12px;cursor:pointer}
 .mmv-btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .mmv-btn.on{border-color:var(--dsw-alias-label-secondary);color:var(--dsw-alias-label-primary)}
@@ -63,16 +66,16 @@ export const VIEWER_CSS = `
 .mmv-health .h:hover{border-color:var(--dsw-alias-label-secondary)}
 .mmv-health .h i{width:8px;height:8px;border-radius:50%}
 .mmv-health .h b{margin-left:auto;font-size:12.5px}
-.mmv-wsview{display:flex;gap:14px;align-items:flex-start;min-height:0;height:100%}
-.mmv-pane{background:color-mix(in srgb,currentColor 3%,transparent);border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:12px;overflow:auto;max-height:100%}
+.mmv-wsview{display:flex;gap:14px;align-items:stretch;min-height:0;height:100%}
+.mmv-pane{background:color-mix(in srgb,currentColor 3%,transparent);border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:12px;overflow:auto;min-height:0;max-height:100%}
 .mmv-pane.left{width:210px;flex:0 0 210px}
-.mmv-pane.mid{flex:1 1 auto;min-width:0;background:none;border:0;padding:0;overflow:visible}
+.mmv-pane.mid{flex:1 1 auto;min-width:0;min-height:0;background:none;border:0;padding:0;overflow:auto}
 .mmv-pane.right{width:320px;flex:0 0 320px}
 .mmv-prow{display:flex;align-items:center;gap:8px;height:25px;border-radius:7px;padding:0 7px;cursor:pointer;font-size:12.5px;color:var(--dsw-alias-label-secondary)}
 .mmv-prow:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .mmv-prow.on{background:color-mix(in srgb,currentColor 8%,transparent);color:var(--dsw-alias-label-primary);font-weight:600}
 .mmv-prow b{margin-left:auto;font:11px ui-monospace,monospace;color:var(--dsw-alias-label-caption)}
-.mmv-filters{display:flex;gap:7px;margin-bottom:9px;flex-wrap:wrap;align-items:center}
+.mmv-filters{display:flex;gap:7px;margin-bottom:9px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:2;background:var(--dsw-alias-bg-base,#16161e);padding:8px 2px 9px;border-bottom:1px solid var(--dsw-alias-border-l3);margin-left:-2px;margin-right:-2px}
 .mmv-chip{border:1px solid var(--dsw-alias-border-l3);background:color-mix(in srgb,currentColor 4%,transparent);border-radius:8px;padding:4px 9px;font-size:11.5px;color:var(--dsw-alias-label-secondary);cursor:pointer}
 .mmv-chip.on{border-color:var(--dsw-alias-label-secondary);color:var(--dsw-alias-label-primary)}
 .mmv-mem{background:color-mix(in srgb,currentColor 4%,transparent);border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:10px 12px;margin-bottom:9px;cursor:pointer}
@@ -108,6 +111,27 @@ export const VIEWER_CSS = `
 .mmv-tl .item{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--dsw-alias-border-l3)}
 .mmv-tl .when{width:130px;flex:0 0 130px;color:var(--dsw-alias-label-caption);font-size:11.5px;font-family:ui-monospace,monospace}
 .mmv-tl .what{min-width:0;flex:1}
+.mmv-btn.primary{border-color:var(--dsw-alias-fill-accent,#7aa2f7);background:var(--dsw-alias-fill-accent,#7aa2f7);color:#16161e;font-weight:600}
+.mmv-btn.primary:hover{background:#8fb0ff;border-color:#8fb0ff;color:#16161e}
+.mmv-btn.warn{border-color:var(--dsw-alias-fill-warn,#e0af68);background:rgba(224,175,104,.13);color:var(--dsw-alias-fill-warn,#e0af68);font-weight:600}
+.mmv-btn.warn:hover{background:rgba(224,175,104,.24);color:var(--dsw-alias-fill-warn,#e0af68)}
+.mmv-btn.ok{border-color:var(--dsw-alias-fill-ok,#9ece6a);background:rgba(158,206,106,.13);color:var(--dsw-alias-fill-ok,#9ece6a);font-weight:600}
+.mmv-btn.ok:hover{background:rgba(158,206,106,.24);color:var(--dsw-alias-fill-ok,#9ece6a)}
+.mmv-btn.danger{border-color:var(--dsw-alias-fill-danger,#f7768e);background:rgba(247,118,142,.1);color:var(--dsw-alias-fill-danger,#f7768e);font-weight:600}
+.mmv-btn.danger:hover{background:rgba(247,118,142,.22);color:var(--dsw-alias-fill-danger,#f7768e)}
+.mmv-btn:disabled{opacity:.5;cursor:default}
+.mmv-overlay-fixed{position:fixed;inset:0;background:rgba(10,10,16,.5);display:flex;align-items:center;justify-content:center;z-index:999}
+.mmv-modal{width:540px;max-width:94vw;max-height:88vh;overflow:auto;background:var(--dsw-alias-bg-base,#1a1b26);border:1px solid var(--dsw-alias-border-l3);border-radius:12px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+.mmv-modal h3{margin:0 0 12px;font-size:14px}
+.mmv-frow{display:flex;gap:8px;align-items:flex-start;margin-bottom:10px}
+.mmv-frow>label{width:84px;flex:0 0 84px;font-size:12px;color:var(--dsw-alias-label-caption);padding-top:6px}
+.mmv-frow .ctrl{flex:1;min-width:0;display:flex;align-items:center}
+.mmv-frow textarea.mmv-input{width:100%;min-height:110px;resize:vertical;padding:7px 10px;line-height:1.5}
+.mmv-frow textarea.mmv-kwta{min-height:64px;height:64px}
+.mmv-frow select.mmv-input{height:28px;padding:0 8px}
+.mmv-star{background:none;border:0;color:var(--dsw-alias-label-caption);font-size:16px;cursor:pointer;padding:2px 1px;line-height:1}
+.mmv-star.on{color:#e0af68}
+.mmv-modal-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 `
 
 /** 幂等注入样式（与既有插件 CSS 注入同款：只保留一份）。 */

@@ -42,7 +42,7 @@
 | R4（附带） | 不改 dsh 本体、不破坏现有纪律 | 全局 | 只读优先、fail-open、零新增运行时依赖、文案外置、双版本兼容 |
 
 **非目标（v1 明确不做）**
-- 不做写操作（编辑/删除/新建记忆）——写路径仍归 `memory_*` 工具；v2 再评估「受控写」（§10）。
+- ~~不做写操作（编辑/删除/新建记忆）~~ —— **v0.31.0 已落地受控写**（§10 的实现：编辑 / 逻辑删除 / 物理删除 / 还原，见 `src/viewer/write.ts` 与 `docs/mockups/05-edit-delete.*`）。
 - 不做跨工作区的记忆合并/搬迁（各库自治是现有语义）。
 - 不做多用户/权限/云同步。
 - 不做「记忆全文导出」以外的数据外流。
@@ -485,13 +485,15 @@ for (const bucket of byProjectBucket(rows)) {
 
 ---
 
-## 10. v2 写操作的边界（若要做）
+## 10. v2 写操作的边界（若要做）—— v0.31.0 已实现
 
-- 允许：`status`（active/stale/archived）、`importance`、`keywords`、`project`、`title`（project/topic）。
-- 不允许：物理删除（项目红线：本机文件一律不删除 → 归档即软删除）、跨库搬迁。
-- 并发：请求带 `expectUpdatedAt`，不等于当前值则 409（前端提示"这条刚被 dream/模型改过，已刷新"）。
-- 审计：写操作落 `dream_log` 同款留痕（新增 `viewer_log` 或复用 `note` 字段）——"谁在什么时候改了什么"。
-- 开关：默认关闭，设置页加一项「允许在查看器里编辑记忆」（默认 false）。
+**落地状态（v0.31.0）**：`src/viewer/write.ts` + `POST /memory/{update,archive,restore,purge}` + `GET /audit`，实现差异与原始边界对照：
+
+- 允许字段：`status`（active/stale/archived）、`importance`、`keywords`、`project`、`title`、`content`、`subcategory`（仅 project 层）、`goal`（仅 topic 层）、`corrected`（仅 lesson 层）；按层门控与 `MemoryDb.update` 对齐。
+- ~~不允许：物理删除~~ —— **用户 v0.31.0 拍板新增物理删除**（「删除分为无效记忆(逻辑删除)、物理删除 两个按钮功能」）：逻辑删除 = `status→archived`（默认列表消失、可还原）；物理删除 = 删行（不可恢复，仍留 `viewer_log` 审计）；物理删除后清理 `projects` 映射表孤儿行。跨库搬迁仍不做。
+- 并发：请求带 `expectUpdatedAt`，不等于当前值则 409（前端提示"这条刚被 dream/模型改过，已刷新"）。✅ 已实现。
+- 审计：写操作落 `viewer_log` 表——"谁在什么时候改了什么"。✅ 已实现（面板「整理留痕」tab 展示）。
+- 开关（默认关闭的设置项）：**未做**——写操作直接可用（面板本来就是用户显式打开的工具，与改名/迁移先例一致），如需可后续加。⚠️ 与 §10 原始设计不同，记录在案。
 
 ---
 
@@ -553,7 +555,7 @@ for (const bucket of byProjectBucket(rows)) {
 | 路由 | 10 个端点 | 12 个：额外加了 `/similar`（详情抽屉的"相关记忆"）与 `/search`（全局视图的跨工作区搜索框） |
 | 入口 | main + sidebar.panellist（+ shell.overlay 后置） | main + sidebar.panellist（已实现）；`shell.overlay` 记忆 chip 未做（Phase 4） |
 | 独立页 `/meow-memory/view` | 兜底入口 | 未做（设置页标签仍可作为降级入口，本次未接线） |
-| 写操作 | v2 可选的 PATCH | 未做（v1 全只读，与设计一致） |
+| 写操作 | v2 可选的 PATCH | **v0.31.0 已实现**：`POST /memory/{update,archive,restore,purge}` + `GET /audit`（viewer_log 留痕）；乐观锁 `expectUpdatedAt`→409；**物理删除为 v0.31.0 用户拍板新增**（超出本文档 §10「不允许物理删除」的原始边界，仍留审计） |
 | 客户端打包 | 先合并，超 400KB 再拆 | `lib/client.js` 78.6KB → **152.5KB**，未超阈值，未拆 |
 | JSX | — | 新增：客户端 JSX 走**经典转换**（`jsxFactory: h`），只依赖 `react`；不赌宿主提供 `react/jsx-runtime` |
 | 代码落点 | `src/viewer/*` + `src/client-viewer/*` | 与设计一致（+~2.0k 行 host、+~1.7k 行 client） |

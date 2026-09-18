@@ -39,7 +39,43 @@ export type ApiErrorCode =
   | 'no-db'
   | 'not-found'
   | 'method-not-allowed'
+  | 'conflict'
   | 'internal'
+
+/** 面板写操作的可编辑字段（与 memory_update 工具同口径，按层门控在 host 侧执行）。 */
+export interface MemoryPatchDto {
+  content?: string
+  title?: string | null
+  importance?: number
+  keywords?: string[]
+  status?: ViewerStatus
+  project?: string | null
+  subcategory?: ViewerSubcategory | null
+  goal?: string | null
+  corrected?: boolean
+}
+
+/** 面板写操作返回（写成功后的最新状态摘要）。 */
+export interface MemoryWriteResultDto {
+  id: string
+  level: ViewerLevel
+  updatedAt: number
+  action: 'update' | 'archive' | 'restore' | 'purge'
+}
+
+/** viewer_log 审计条目（面板写操作留痕："谁在什么时候改了什么"）。 */
+export interface ViewerLogEntry {
+  at: number
+  workspace: string
+  action: 'update' | 'archive' | 'restore' | 'purge'
+  id: string
+  level: ViewerLevel
+  summary: string
+}
+
+export interface ViewerLogDto {
+  log: ViewerLogEntry[]
+}
 
 export type ApiResponse<T> = ApiOk<T> | ApiErr
 

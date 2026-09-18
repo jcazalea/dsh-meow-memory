@@ -243,7 +243,7 @@ dsh plugin --profile web remove meow-memory
 **换电脑 / 备份**：拷贝 `~/.dsh-meow/memory.db` 和 `~/.dsh-meow/sessions/`
 这两个到新机器的相同位置即可（不是双向同步，是搬家式拷贝）。
 
-## 🔭 记忆查看器（v0.27.0）
+## 🔭 记忆查看器（v0.27.0；写操作 v0.31.0）
 
 **入口**：左侧栏「全局面板」区多一个记忆图标（`sidebar.panellist`）——点它，中央区域切到记忆查看器（`main` 面板，key = `meow-memory`）。零 dsh 本体改动：两个 slot 都是官方扩展点，id/key 同名即自动配对。
 
@@ -252,10 +252,10 @@ dsh plugin --profile web remove meow-memory
 | 视图 | 内容 |
 | --- | --- |
 | 全局 | 跨工作区 KPI（工作区/记忆总数/本周新增/项目/待整理窗口/已完结+删除）、每个工作区的层级堆叠条与 dream 状态、跨库最近更新、各库 `project="全局"` 条目（标注来源工作区）、健康检查（无关键词 / 超期准则 / 疑似重复 / 未完成 todo）、整理留痕；搜索框跨工作区检索 |
-| 工作区 | 左：项目树 + 层级过滤；中：记忆列表（服务端过滤：level/status/project/天数/BM25 检索）；右：详情抽屉（原文全文 + 全量元数据 + 相关记忆 `findSimilar`）；底部标签：时间线 / 整理留痕 / 会话足迹 |
+| 工作区 | 左：项目树 + 层级过滤；中：记忆列表（服务端过滤：level/status/project/天数/BM25 检索）；右：详情抽屉（原文全文 + 全量元数据 + 相关记忆 `findSimilar` + **编辑/归档/物理删除/还原**）；底部标签：时间线 / 整理留痕（含面板写操作留痕）/ 会话足迹 |
 | 星图 | Canvas 绘制。默认**星座布局**（项目=星系核心、level=分层半径、时间=角度，确定性可复现），可切力导向；边分四类可分别开关；层级开关只改透明度、不重算布局（位置稳定） |
 
-**数据面**（宿主 `prefix` 路由 `/meow-memory/api`，全部只读）：
+**数据面**（宿主 `prefix` 路由 `/meow-memory/api`；读取全部 GET，写操作为 POST）：
 
 ```
 GET /context?sessionId=        会话 → 工作区 + 该会话记忆足迹
@@ -267,16 +267,21 @@ GET /similar?workspace=&id=&k= 相关记忆（复用 bm25.findSimilar）
 GET /projects | /timeline | /dreams | /sessions    项目分组 / 时间线 / 留痕+窗口 / 会话足迹
 GET /search?q=                 跨工作区检索
 GET /graph?scope=&workspace=&level=&edges=&threshold=&topK=&limit=   星图节点与边
+GET /audit?workspace=&limit=   面板写操作留痕（viewer_log）
+POST /memory/update   {workspace,id,expectUpdatedAt?,patch}   修改记忆（按层门控；乐观锁 409）
+POST /memory/archive  {workspace,id}   无效记忆（逻辑删除 → status=archived，可还原）
+POST /memory/restore  {workspace,id}   还原 → status=active
+POST /memory/purge    {workspace,id}   物理删除（彻底移除，留审计记录）
 ```
 
-统一响应 `{ ok, data, meta: { generatedAt, etag, partial } }`；带 `If-None-Match` 命中即 304（前端 60s 轮询几乎零成本）；`partial` 列出读取失败的工作区。
+写操作安全边界：workspace 过白名单、请求体 64KB、`sanitizePatch` 字段白名单、只接受完整 36 位 id、直接可写打开中央库（绝不用会建表/迁移的 `getDb()`）、任何写操作落 `viewer_log` 审计表。统一响应 `{ ok, data, meta: { generatedAt, etag, partial } }`；带 `If-None-Match` 命中即 304（前端 60s 轮询几乎零成本）；`partial` 列出读取失败的工作区。
 
 **面板里的「项目」从哪来 / 怎么删**
 
 项目**不是一张独立的表**，也没有"新建项目"入口：它是各层记忆条目 `project` 字段值的聚合投影（`repository.projects()` / `aggregate.projectSummaries()`；单值或逗号分隔的多归属都拆开计数，`全局`/`未标记` 各自成桶）。所以：
 
 - **出现**：任何一次 `memory_remember`（v2 起缺省自动归属当前工作区派生的项目 id；或显式传的 project、dream 封存时打的归属、旧库迁移带进来的标签）都会让该项目出现在面板里。
-- **消失**：改写引用它的那些条目的 `project` 字段。查看器本身**只读**（Phase 4 的写操作未做），所以用脚本：
+- **消失**：① 面板内直接改（编辑浮层里把条目的「项目」改成别的/未标记）；② 批量用脚本改写引用它的那些条目的 `project` 字段：
 
 ```bash
 python3 scripts/project-admin.py ls                  # 看当前项目清单与条目数
@@ -284,6 +289,8 @@ python3 scripts/project-admin.py rm foo --dry-run    # 预览：摘标签 + 归�
 python3 scripts/project-admin.py rm foo --yes        # 执行（自动备份 memory.db 为 .bak-<时间戳>）
 python3 scripts/project-admin.py mv foo bar --yes    # 改名（同名已存在则等价于合并）
 ```
+
+物理删除最后一条引用后，`projects` 映射表的孤儿行也会被自动清理（项目 = 记忆的聚合投影）。
 
 `rm` 三种处理方式：`--mode archive`（默认，摘标签+归档，记忆仍在库里可查）/ `unlabel`（摘标签但保持 active，仍参与检索注入）/ `global`（转为全局，跨项目注入）；加 `--purge` 额外物理删除该项目下非 active 的条目。**删项目前先停掉 `dsh web`**，避免插件并发写覆盖。
 
