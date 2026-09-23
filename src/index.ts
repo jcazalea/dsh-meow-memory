@@ -50,7 +50,7 @@ import { buildHitInjection, buildInjection, buildReinjection, clearReinjectPendi
 import { resolveProjectId, setProjectResolveEnabled } from './resolve.js'
 import { migrateLegacy } from './migrate.js'
 import { buildReflectMessage, consecutiveToolSteps, PLUGIN_SOURCE, REFLECT_MARKER, scanTurn } from './reflect.js'
-import { registerMemoryTools } from './tools.js'
+import { registerMemoryTools, MEMORY_TOOL_NAMES } from './tools.js'
 import { isSessionMemoryEnabled, resetSessionMemoryCache, setNonGitMemoryPolicy, setSessionMemoryEnabled } from './session-state.js'
 import { resolveSlotText, setPromptLang } from './prompt-loader.js'
 import { createViewerApi } from './viewer/routes.js'
@@ -117,6 +117,69 @@ function createMemoryNoticeMessage(text: string): ReturnType<typeof createUserMe
  */
 export function getMemoryGuide(): string {
   return resolveSlotText('system-guide')
+}
+
+/** 记忆手册 section 名（v0.32.0 起会话禁用时 system-prompt/assemble 按名裁剪）。 */
+export const GUIDE_SECTION_NAME = 'meow-memory:guide'
+
+// ── 会话禁用的「模型侧可见性」门禁（v0.32.0） ────────────────────────────────
+// 需求（用户拍板 2026-09-19）：会话禁用记忆后，模型上下文应零记忆痕迹——不注入内容、
+// 不显示记忆手册、不提供 memory_* 工具，模型不再"思考总结记忆"。
+// 实现：system-prompt/assemble waterfall 按会话裁剪（dsh 官方扩展点，注册方式与
+// system-prompt-invariant 同款：ctx.on + global:true）；与 tools.ts 的 execute 门禁
+// 双层互补：展示层裁剪（模型看不到） + 执行层兜底（模型硬调仍被拦）。
+
+/** dsh-system-prompt PromptAssembly 的最小结构视图（本插件消费面；不 import 该包，
+ *  保持零运行时依赖——与 tryRegisterGuideSection 的 ctx.get 探测同风格）。 */
+interface PromptAssemblyLike {
+  sections: Array<{ name: string; text: string; interpolate?: boolean }>
+  contexts: Array<{ name: string; text: string }>
+  tools: Array<{ name: string; description: string; parameters: unknown }>
+  variables: Record<string, string | undefined>
+}
+
+/** dsh-system-prompt AssembleContext 的最小结构视图：scope === agent（dsh-agent
+ *  assembleContextFor：{ agent, scope: agent, signal }）。 */
+interface AssembleContextLike {
+  scope?: unknown
+  agent?: unknown
+}
+
+/** 会话禁用的模型侧裁剪（纯函数，测试直调）：移除记忆手册 section + 全部 memory_*
+ *  工具（+ 防御性移除 contexts 里 meow-memory 前缀条目）。启用时原样返回（同一引用
+ *  零拷贝）；null/undefined 透传（装配异常时 fail-open，不干扰宿主）。 */
+export function applySessionMemoryVisibility<T extends PromptAssemblyLike | null | undefined>(assembly: T, enabled: boolean): T {
+  if (enabled || assembly === null || assembly === undefined) return assembly
+  return {
+    ...assembly,
+    sections: assembly.sections.filter((s) => s.name !== GUIDE_SECTION_NAME),
+    contexts: assembly.contexts.filter((c) => !c.name.startsWith('meow-memory')),
+    tools: assembly.tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name)),
+  }
+}
+
+/** 从 assemble 上下文判定「本会话记忆开关是否生效」：scope/agent 取会话 header；
+ *  子代理归父窗口（与 tools.ts sessionIdOf 同口径）；取不到会话/工作区 fail-open 放行
+ *  （无头会话按启用处理，安全侧）。 */
+export function sessionMemoryOnForAssemble(context: AssembleContextLike, dir = '.dsh-meow'): boolean {
+  const agentLike = (context.scope ?? context.agent) as { session?: { header?: SessionHeaderLike } } | undefined
+  const header = agentLike?.session?.header
+  const sid = typeof header?.id === 'string' && header.id.length > 0 ? header.id : null
+  const cwd = typeof header?.cwd === 'string' && header.cwd.length > 0 ? header.cwd : null
+  if (sid === null || cwd === null) return true
+  let effSid: string = sid
+  if (header?.origin === 'subagent' && header.parentSession !== undefined) {
+    const p = header.parentSession
+    if (typeof p === 'string' && p.length > 0) effSid = p
+    else if (p !== null && typeof p === 'object' && typeof (p as { id?: unknown }).id === 'string') effSid = (p as { id: string }).id
+  }
+  return isSessionMemoryEnabled(cwd, effSid, dir)
+}
+
+/** meow-memory 插件注入的消息（长期记忆快照/命中/重注入/引导通知）：会话禁用时
+ *  从模型上下文剔除（会话记录本身不动，仅改模型侧可见性）。 */
+function isMemoryPluginMessage(m: { source?: { kind?: string; plugin?: string } }): boolean {
+  return m.source?.kind === 'plugin' && m.source?.plugin === 'meow-memory'
 }
 
 // ── 性能诊断（perf.log，固定位置 ~/.dsh-meow/perf.log；卡死时查数据） ────────
@@ -637,7 +700,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
       return
     }
     try {
-      const dispose = svc.section({ name: 'meow-memory:guide', order: 130, text: getMemoryGuide() })
+      const dispose = svc.section({ name: GUIDE_SECTION_NAME, order: 130, text: getMemoryGuide() })
       guideRegistered = true
       if (typeof dispose === 'function') toolDisposers.push(dispose)
       ctx.logger.info('meow-memory: guide section registered into system prompt')
@@ -649,6 +712,23 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   }
   tryRegisterGuideSection(0)
   toolDisposers.push(() => clearTimeout(guideTimer))
+
+  // 会话禁用的「模型侧可见性」门禁（v0.32.0）：system-prompt/assemble waterfall 按
+  // 会话裁剪——禁用会话的系统提示词不再含记忆手册、工具集不再含 memory_* 工具，
+  // 模型上下文零记忆痕迹（与 tools.ts execute 门禁双层互补）。
+  // 注册不依赖 systemPrompt 服务就绪：该事件由服务装配时发出，服务缺席则永不触发
+  // （无副作用）；global:true = 接收所有 agent scope 的装配（system-prompt-invariant
+  // 同款注册方式）。每次装配成本 = 一次 O(1) 会话开关缓存判断。
+  const disposeAssembleGate = ctx.on(
+    'system-prompt/assemble',
+    async (assembly: PromptAssemblyLike, context: AssembleContextLike, next: () => Promise<PromptAssemblyLike>) => {
+      const assembled = await next()
+      return applySessionMemoryVisibility(assembled, sessionMemoryOnForAssemble(context, resolved.projectDir))
+    },
+    { global: true },
+  )
+  if (typeof disposeAssembleGate === 'function') toolDisposers.push(() => disposeAssembleGate())
+  ctx.logger.info('meow-memory: session memory visibility gate armed (system-prompt/assemble)')
 
   // 窗口表：只处理低频事件类型（流式 assistant/chunk 每块一个事件，绝不逐块写库）。
   // 节流：同一窗口 5 秒内最多落库一次（内存记 lastWrite，事件循环零阻塞）。
@@ -784,7 +864,13 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
     // 会话级记忆开关（v0.28.0）：本会话禁用 → 不注入（首轮快照/关键词命中/压缩
     // 重注入/首次语言引导全部跳过），fail-open 放行原始 decision。子代理已在上方
     // return（不注入），此处只需管主会话自身。
-    if (ws && !isSessionMemoryEnabled(ws, sid, resolved.projectDir)) return decision
+    // v0.32.0：追加「模型侧可见性」清理——本会话历史里已注入的 meow-memory 插件块
+    // （长期记忆快照/命中/重注入/引导通知）也从模型上下文剔除，禁用后模型不再看到
+    // 任何记忆内容（含此前注入的长期记忆）；会话记录本身不动，仅改模型侧可见性。
+    if (ws && !isSessionMemoryEnabled(ws, sid, resolved.projectDir)) {
+      if (!decision.messages.some(isMemoryPluginMessage)) return decision
+      return { ...decision, messages: decision.messages.filter((m) => !isMemoryPluginMessage(m)) }
+    }
 
     // 真实用户消息（跳过插件通知等，source.kind='plugin' 的进不来）。
     const userMsgs = decision.messages.filter((m: { source?: { kind?: string } }) => m.source?.kind === 'user')
@@ -1375,6 +1461,7 @@ export { isCentralMigrated, migrateToCentral, migrateLegacyPath, resolveLegacyDb
 export { buildHitInjection, buildInjection, buildReinjection, buildProjectSectionText, readSeen, markSearched, markAccessed, readInjected, markInjected, markProjectQueried, readProjectQueried, markWritten, readWritten, markReinjectPending, clearReinjectPending, isReinjectPending, MAX_REINJECT_PROJECTS, MAX_REINJECT_WRITTEN, sessionsFile, getCurrentProject, setCurrentProject, releaseSeen } from './inject.js'
 export { resolveProjectId, normalizeGitUrl, probeGit, readOriginUrl, isGitWorkspace, setProjectResolveEnabled, isProjectResolveEnabled, clearProjectResolveCache } from './resolve.js'
 export { buildReflectMessage, consecutiveToolSteps, scanTurn } from './reflect.js'
+export { MEMORY_TOOL_NAMES } from './tools.js'
 export { tokenize, stemEn, search, findSimilar, topicDrift, recencyWeight } from './bm25.js'
 export { fillTemplate, keyedValue, resolveSlotText, setPromptLang, getPromptLang, DEFAULT_LANG, SLOTS } from './prompt-loader.js'
 export { collectDreamRounds, buildDreamMessage, windowNeedsDream, DREAM_MARKER, noteActivity, hourInTimeZone, minutesInTimeZone, isDreamSuppressed, startWindowDream, resumeAndDream, advanceDream, abortDream, recoverInterruptedDream, dreamCommandDefinition, isSubagentAgent, dreamSweepOnce, type DreamConfig } from './dream.js'

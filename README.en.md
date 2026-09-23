@@ -105,6 +105,18 @@ frozen at the last conversation timestamp.
   model whether anything since the last consolidation is worth remembering. A turn whose
   last tool is a `memory_*` tool counts as already having consolidated (no re-reflection);
   cancelled turns never trigger it.
+- **Per-session memory toggle (client, v0.28.0; model-side zero footprint v0.32.0)**: a
+  **「记忆」** switch next to the composer's send button (green dot = enabled / grey dot =
+  disabled), independent per session and persisted. Enabled: normal inject/search/generate.
+  **Disabled: no injection, no keyword hits, no reflection, no auto dream, `memory_*` tools
+  return a "memory disabled" error**, and since v0.32.0 the **model context carries zero
+  memory footprint** — the memory manual section and all `memory_*` tool definitions are
+  stripped per-session at the `system-prompt/assemble` waterfall, and previously injected
+  long-term memory / hit blocks are removed from the model context when a session is toggled
+  off mid-conversation (the session record itself is untouched). A notice bar reads
+  "本会话记忆已禁用：不注入 · 不检索 · 不生成（点「记忆」可恢复）"; subagents inherit
+  the parent session's state. The viewer panel and settings page stay available (explicit
+  user actions).
 - **Injection-fold UI (client)**: first-turn long-term memory / per-message keyword hits
   collapse into a slim "injected memory" bar (same width as the user bubble) — click to see
   the full injected text; the user prompt shows as a bubble, keeping the flow clean.

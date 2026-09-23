@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.32.0 (2026-09-19)
+
+### 会话禁用的「模型侧可见性」：禁用后模型上下文零记忆痕迹
+
+- **问题**（用户发现）：「禁用记忆后虽然提示『不注入 · 不检索 · 不生成』，也确实没有获取和写入记忆，但模型还是实打实的思考了总结来的记忆，只是没有使用」。核对结论：动态内容与执行层门禁原本已生效（首轮快照/命中/重注入/引导/反思/dream/工具 execute 全部拦截），但**静态记忆系统面**无门禁——系统提示词里的《记忆系统手册》（`meow-memory:guide` section，order 130）与 7 个 `memory_*` 工具定义（schema/description）全局恒定可见，与会话开关无关；模型每轮都带着手册与工具目录思考，自然还会按手册指示去"总结记忆"。
+- **修法 ①（host 展示层）**：新增 `system-prompt/assemble` waterfall 门禁（`ctx.on(..., { global: true })`，dsh 官方扩展点，注册方式与 system-prompt-invariant 同款）——按会话裁剪装配结果：`context.scope` === agent（dsh-agent `assembleContextFor` 实证），经 `sessionMemoryOnForAssemble` 取会话 id/cwd（子代理经 `parentSession` 归父窗口，与 `tools.ts sessionIdOf` 同口径）判 `isSessionMemoryEnabled`；禁用 → 从 `sections` 移除 `meow-memory:guide`、从 `tools` 移除全部 memory_* 工具、从 `contexts` 防御性移除 `meow-memory` 前缀条目。效果：禁用会话的每次 LLM 请求，系统提示词无记忆手册、工具集无记忆工具——**模型上下文零记忆痕迹**，不再"思考总结记忆"；重新启用即刻恢复。
+- **修法 ②（host 上下文清理）**：`preStepInject` 禁用分支由 `return decision` 改为过滤 `decision.messages` 里 `source.kind==='plugin' && source.plugin==='meow-memory'` 的消息——会话**中途**禁用后，此前注入的长期记忆快照/命中/重注入/引导通知块也从模型上下文剔除（会话记录本身不动，仅改模型侧可见性）。
+- **执行层兜底保留**：`tools.ts` 的 execute 门禁（禁用时报 `memory.disabled`）不变——展示层裁剪（模型看不到） + 执行层拦截（模型从历史/子代理 prompt 硬调仍被拦）双层互补。
+- **结构**：纯函数 `applySessionMemoryVisibility(assembly, enabled)` 与 `sessionMemoryOnForAssemble(context, dir)` 可单测；`MEMORY_TOOL_NAMES`（7 工具集合）导出自 `tools.ts`；`GUIDE_SECTION_NAME` 常量统一。子代理继承判定与工具门禁同口径（父禁用 → 子代理 assembly 同样裁剪）。
+- **测试**：主套件 478 → 494（+16：纯函数裁剪/透传、无头 fail-open、wiring 注册 + 禁用裁剪/启用原样/子代理继承、pre-step 历史块剔除/保留）。
+- **注意**：改 lib 后需重启 dsh web 生效；中途禁用前的历史注入块属于会话记录，UI 折叠条仍显示（模型侧已剔除）；新会话禁用 = 从头零痕迹。
+
 ## v0.31.0 (2026-09-18)
 
 ### 记忆查看器写操作：修改 / 逻辑删除（归档）/ 物理删除 / 还原

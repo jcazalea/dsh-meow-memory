@@ -70,6 +70,10 @@ import {
   getNonGitMemoryPolicy,
   isGitWorkspace,
   isProjectResolveEnabled,
+  applySessionMemoryVisibility,
+  sessionMemoryOnForAssemble,
+  GUIDE_SECTION_NAME,
+  MEMORY_TOOL_NAMES,
 } from './lib/index.js'
 
 let passed = 0
@@ -1797,6 +1801,83 @@ rmSync(ctxOffDir, { recursive: true, force: true })
   const cmdDef = dreamCommandDefinition(sweepCtx, wsS)
   const rCmd = await cmdDef.handler({ agent: { session: { header: { cwd: wsS, id: 'win-f' } } } })
   check('/dream command blocked when disabled', rCmd.kind === 'error' && rCmd.text.includes('记忆已禁用'), JSON.stringify(rCmd))
+
+  // ── 模型侧可见性门禁（v0.32.0）：禁用会话 → 记忆手册 + memory_* 工具从模型
+  //    上下文裁剪；pre-step 剔除历史注入块。 ──
+  {
+    const mkAssembly = () => ({
+      sections: [
+        { name: GUIDE_SECTION_NAME, text: '【记忆系统】手册' },
+        { name: 'tool:bash', text: 'bash 说明' },
+      ],
+      contexts: [{ name: 'meow-memory:ctx', text: 'x' }, { name: 'runtime', text: 'y' }],
+      tools: [
+        { name: 'memory_remember', description: 'd', parameters: {} },
+        { name: 'memory_search', description: 'd', parameters: {} },
+        { name: 'memory_find_similar', description: 'd', parameters: {} },
+        { name: 'memory_read', description: 'd', parameters: {} },
+        { name: 'memory_update', description: 'd', parameters: {} },
+        { name: 'memory_project', description: 'd', parameters: {} },
+        { name: 'memory_dream', description: 'd', parameters: {} },
+        { name: 'bash', description: 'd', parameters: {} },
+      ],
+      variables: {},
+    })
+    // ── 纯函数：applySessionMemoryVisibility ──
+    check('MEMORY_TOOL_NAMES covers all 7 memory tools', MEMORY_TOOL_NAMES.size === 7 && [...MEMORY_TOOL_NAMES].every((n) => n.startsWith('memory_')))
+    const asmOn = mkAssembly()
+    check('visibility gate: enabled returns same reference', applySessionMemoryVisibility(asmOn, true) === asmOn)
+    const asmOff = applySessionMemoryVisibility(mkAssembly(), false)
+    check('visibility gate: disabled strips guide section', !asmOff.sections.some((s) => s.name === GUIDE_SECTION_NAME))
+    check('visibility gate: disabled keeps non-memory sections', asmOff.sections.some((s) => s.name === 'tool:bash'))
+    check('visibility gate: disabled strips all 7 memory tools', !asmOff.tools.some((t) => t.name.startsWith('memory_')) && asmOff.tools.length === 1)
+    check('visibility gate: disabled keeps non-memory tools', asmOff.tools.some((t) => t.name === 'bash'))
+    check('visibility gate: disabled strips meow-memory contexts', !asmOff.contexts.some((c) => c.name.startsWith('meow-memory')) && asmOff.contexts.length === 1)
+    check('visibility gate: null/undefined passthrough', applySessionMemoryVisibility(null, false) === null && applySessionMemoryVisibility(undefined, false) === undefined)
+    // ── 纯函数：sessionMemoryOnForAssemble（无头/无 cwd fail-open） ──
+    check('assemble ctx: no scope/agent → enabled (fail-open)', sessionMemoryOnForAssemble({}) === true)
+    check('assemble ctx: header without cwd → enabled (fail-open)', sessionMemoryOnForAssemble({ scope: { session: { header: { id: 'x' } } } }) === true)
+
+    // ── wiring：apply 注册 system-prompt/assemble 监听器；禁用裁剪 / 启用原样 ──
+    const assembleHandler = handlers['system-prompt/assemble']
+    check('apply registers system-prompt/assemble handler', typeof assembleHandler === 'function')
+    // waterfall 的 next 是零参闭包（systemPrompt.assemble 传 () => Promise.resolve(assembly)）
+    const nextAsm = (a) => async () => a
+    const ctxOf = (id, extra) => ({ scope: { session: { header: { cwd: wsS, id, ...extra } } }, agent: undefined })
+    setSessionMemoryEnabled(wsS, 'asm-1', false, applyDir)
+    const wAsmOff = await assembleHandler(mkAssembly(), ctxOf('asm-1'), nextAsm(mkAssembly()))
+    check('assemble wiring: disabled session strips guide + tools', !wAsmOff.sections.some((s) => s.name === GUIDE_SECTION_NAME) && !wAsmOff.tools.some((t) => t.name.startsWith('memory_')))
+    setSessionMemoryEnabled(wsS, 'asm-1', true, applyDir)
+    const wAsmOn = await assembleHandler(mkAssembly(), ctxOf('asm-1'), nextAsm(mkAssembly()))
+    check('assemble wiring: enabled session keeps guide + tools', wAsmOn.sections.some((s) => s.name === GUIDE_SECTION_NAME) && wAsmOn.tools.some((t) => t.name === 'memory_remember') && wAsmOn.tools.length === 8)
+    // 子代理归父窗口：父禁用 → 子代理 assembly 同样裁剪
+    setSessionMemoryEnabled(wsS, 'asm-2', false, applyDir)
+    const wAsmSub = await assembleHandler(mkAssembly(), ctxOf('asm-2-child', { origin: 'subagent', parentSession: 'asm-2' }), nextAsm(mkAssembly()))
+    check('assemble wiring: subagent inherits parent disabled', !wAsmSub.tools.some((t) => t.name.startsWith('memory_')))
+    setSessionMemoryEnabled(wsS, 'asm-2', true, applyDir)
+
+    // ── pre-step 消息可见性（改动 2）：禁用会话剔除历史 meow-memory 注入块 ──
+    const agentV = { session: { header: { cwd: wsS, id: 'asm-3' }, events: [events.userMsg('之前')] }, steer: () => {} }
+    const memMsg = { content: [{ type: 'text', text: '===== 长期记忆 =====' }], source: { kind: 'plugin', plugin: 'meow-memory', form: 'snapshot' } }
+    const otherPluginMsg = { content: [{ type: 'text', text: 'policy notice' }], source: { kind: 'plugin', plugin: 'user-approval' } }
+    const userMsgV = { content: [{ type: 'text', text: '独特无命中词xyz' }], source: { kind: 'user' } }
+    const msgsV = [memMsg, otherPluginMsg, userMsgV]
+    setSessionMemoryEnabled(wsS, 'asm-3', false, applyDir)
+    const decisionV = await preStep(
+      { agent: agentV, messages: msgsV, turn: 9, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: msgsV }),
+    )
+    check('disabled pre-step strips historical meow-memory blocks',
+      decisionV.messages.length === 2 &&
+      decisionV.messages[0] === otherPluginMsg && decisionV.messages[1] === userMsgV &&
+      !decisionV.messages.some((m) => m.source?.kind === 'plugin' && m.source?.plugin === 'meow-memory'))
+    setSessionMemoryEnabled(wsS, 'asm-3', true, applyDir)
+    const decisionVOn = await preStep(
+      { agent: agentV, messages: msgsV, turn: 10, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: msgsV }),
+    )
+    check('enabled pre-step keeps historical meow-memory blocks', decisionVOn.messages.some((m) => m === memMsg))
+  }
 
   dbS.close()
   dbD2.close()

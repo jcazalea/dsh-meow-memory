@@ -23,6 +23,18 @@ import { buildProjectSectionText, markProjectQueried, markWritten, readSeen, mar
 
 export type { Level }
 
+/** 全部 memory_* 工具名（v0.32.0 起 system-prompt/assemble 按会话门禁裁剪用）：
+ *  registerMemoryTools 注册 6 个 + index.ts 单独注册的 memory_dream。 */
+export const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'memory_remember',
+  'memory_search',
+  'memory_find_similar',
+  'memory_read',
+  'memory_update',
+  'memory_project',
+  'memory_dream',
+])
+
 /** 检索范围过滤（查询参数）：只按 project/status/days 过滤。
  *  已见（injected+searched）与本 session 建立的记忆不再预排除——search 先全量排名，
  *  前 5 条无脑取（不排除任何记忆），第 6 名起绕开已见补齐（用户拍板 2026-08-19）。 */

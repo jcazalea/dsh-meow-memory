@@ -83,6 +83,30 @@
 - **多标签页**：状态真源在 host DB，行为一致性自动保证；另一标签页的按钮 UI 同步靠既有 SSE 通道（可选，本期不做）。
 - **总开关关闭时**：host 不注册路由 → 客户端 `GET` 失败 → 按钮 fail-closed 隐藏。
 
+## 5.5 模型侧可见性（v0.32.0 追加）
+
+> 用户反馈（2026-09-19）：禁用后虽提示「不注入 · 不检索 · 不生成」，也确实没有获取和写入记忆，
+> 但模型还是实打实的思考了总结来的记忆，只是没有使用。核对：动态内容与执行层门禁原本已生效，
+> 缺口在**静态记忆系统面**——系统提示词里的记忆手册 + memory_* 工具定义全局恒定可见。
+
+- **目标**：会话禁用后，模型上下文**零记忆痕迹**——不注入内容、不显示记忆手册、不提供
+  memory_* 工具；模型不再按手册指示去"思考总结记忆"。
+- **修法 ① 展示层（system-prompt/assemble 门禁）**：host 注册
+  `ctx.on('system-prompt/assemble', listener, { global: true })`（dsh 官方扩展点，与
+  system-prompt-invariant 同款注册）。装配时 `context.scope` === agent（dsh-agent
+  `assembleContextFor`：`{ agent, scope: agent, signal }`），取 `session.header.id/.cwd`
+  （子代理经 `parentSession` 归父窗口，与 tools.ts `sessionIdOf` 同口径）判
+  `isSessionMemoryEnabled`。禁用 → 从装配结果移除 `meow-memory:guide` section、全部
+  memory_* 工具、`meow-memory` 前缀 contexts。纯函数 `applySessionMemoryVisibility`
+  / `sessionMemoryOnForAssemble` 可单测。
+- **修法 ② 上下文清理（pre-step）**：`preStepInject` 禁用分支过滤 `decision.messages`
+  里 `source.kind==='plugin' && source.plugin==='meow-memory'` 的消息——会话**中途**禁用
+  后，此前注入的长期记忆/命中/重注入/引导通知块也从模型上下文剔除（会话记录不动）。
+- **双层互补**：展示层裁剪（模型看不到）+ 工具 execute 门禁（模型从历史/子代理 prompt
+  硬调仍被拦，报 `memory.disabled`）。重新启用即刻恢复。
+- **边界**：会话中途禁用前已注入的块属于会话记录，UI 折叠条仍显示（仅模型侧剔除）；
+  新会话从头禁用 = 无任何痕迹。
+
 ## 6. 双层开关图示
 
 ```
