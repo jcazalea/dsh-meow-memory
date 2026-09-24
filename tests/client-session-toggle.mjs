@@ -15,7 +15,7 @@ const { outputFiles } = await build({
 })
 const code = new TextDecoder().decode(outputFiles[0].contents)
 const modUrl = 'data:text/javascript;base64,' + Buffer.from(code).toString('base64')
-const { fetchSessionMemory, postSessionMemory, knownState, publishState } = await import(modUrl)
+const { fetchSessionMemory, postSessionMemory, knownState, publishState, resolveSessionId } = await import(modUrl)
 
 let passed = 0
 let failed = 0
@@ -69,6 +69,22 @@ publishState('s-10', false)
 check('publishState → knownState', knownState('s-10') === false)
 publishState('s-10', true)
 check('publishState overwrite', knownState('s-10') === true)
+
+// ── resolveSessionId（v0.31.1 回归修复，v0.32.1 重新并入源码） ───────────────
+// dsh 0.1.6 起 session 作用域槽注入 sessionId 标准 prop、快照移除 current：
+// 只认 store.current 会让组件恒 undefined → fail-closed 静默消失（「记忆」开关
+// 消失根因）。以下模拟 0.1.6 快照（无 current）+ prop 注入的两种真实形态。
+check('resolve: 0.1.6 形态（无 current + prop 注入）→ prop', resolveSessionId('sess-a', undefined) === 'sess-a')
+check('resolve: 0.1.6 形态（store 无 current 字段）→ prop 兜底成功', resolveSessionId('sess-b', { current: undefined }) === 'sess-b')
+check('resolve: 旧宿主（无 prop + store.current）→ current', resolveSessionId(undefined, 'sess-c') === 'sess-c')
+check('resolve: 双源齐备 → 优先 prop', resolveSessionId('sess-d', 'sess-d-old') === 'sess-d')
+check('resolve: prop 为空串 → 回退 current', resolveSessionId('', 'sess-e') === 'sess-e')
+check('resolve: prop 为空白串 → 回退 current', resolveSessionId('   ', 'sess-f') === 'sess-f')
+check('resolve: prop 非字符串（对象）→ 回退 current', resolveSessionId({ sessionId: 'sess-g' }, 'sess-g') === 'sess-g')
+check('resolve: prop 非字符串 + 无 current → undefined', resolveSessionId(42, undefined) === undefined)
+check('resolve: 双源皆空串 → undefined', resolveSessionId('', '') === undefined)
+check('resolve: 双源皆 undefined → undefined', resolveSessionId(undefined, undefined) === undefined)
+check('resolve: prop 长度 0 但 current 为数字 → undefined', resolveSessionId('', 7) === undefined)
 
 globalThis.fetch = origFetch
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.32.1 (2026-09-24)
+
+### 修复：dsh 0.1.6 下 composer「记忆」开关再次消失（v0.31.1 修复重新并入源码）
+
+- **问题**（用户反馈：「对话框中的记忆启用、禁用的『记忆』按钮又不见了」）：v0.31.1 的修复（`resolveSessionId`）当时只覆盖了 profile 的构建产物、**未提交进 git**；v0.32.0 基于 v0.31.0 源码重建后修复丢失 → 0.1.6 下开关再次 fail-closed 静默消失。已核验：0.32.0 源码与发布 tgz 的 `lib/client.js` 均无 `resolveSessionId`。
+- **根因**（dsh 0.1.6-alpha.2 破坏性变更）：client session controller 重写后，`ClientSessions.list` 快照移除了 `current` 字段（实证：`SessionListState` 仅有 `ids/byId/phase/subagentsByParent/...`）；而 session 作用域槽（`conversation.input.right` / `conversation.input.dock` / `conversation.session.header.actions` 等，实证 `scope: 'session'`）的**标准 props 直接注入 `sessionId`**。组件只从 `useSessions(s => s.current)` 取会话 id → 恒 undefined → fail-closed 返回 null，按钮与提示条全部消失。
+- **修法**：`src/client-session-toggle-core.ts` 新增纯函数 `resolveSessionId(sessionIdProp, storeCurrent)` —— 优先宿主注入的 `sessionId`（非空串），回退 sessions store 快照的 `current`（旧宿主 / 全局作用域兼容）。三个消费点统一接入：`MemoryToggleDock`（input.right）、`MemoryDisabledNotice`（input.dock，另保留 `props.session?.sessionId` 旧契约兜底）、`DelegateVanishDock`（header.actions，同类隐患一并修）。
+- **教训**：客户端插件兼容性修复必须随源码提交进 git 并写入 CHANGELOG，仅覆盖构建产物会在下次发布时回归（本次事故即 v0.31.1 产物级修复未入库所致）。
+- **测试**：`tests/client-session-toggle.mjs` 新增 11 项 `resolveSessionId` 回归断言（0.1.6 无 current + prop 注入形态 / 旧宿主 current 回退 / 双源优先级 / 空串与空白串 / 非字符串 / 双源皆缺），全量 494+98+45+37+16+24+22+13+24 绿。
+- **注意**：改 lib 后需重启 dsh web 生效；本修复已提交进 git，后续发布不再丢失。
+
 ## v0.32.0 (2026-09-19)
 
 ### 会话禁用的「模型侧可见性」：禁用后模型上下文零记忆痕迹

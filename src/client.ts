@@ -33,6 +33,7 @@ import { startDreamIconManager } from './client-dream-icon.ts'
 import { startDreamSkipManager } from './client-dream-skip.ts'
 import { applySettingsPage } from './settings-page.ts'
 import { applyViewerPanel } from './client-viewer/index.ts'
+import { resolveSessionId } from './client-session-toggle-core.ts'
 import { MemoryDisabledNotice, MemoryToggleDock } from './client-session-toggle.ts'
 
 /** 折叠行标记（CSS 规则隐藏）。 */
@@ -655,11 +656,19 @@ export function MemoryFoldDock(props: {
  */
 function makeDelegateVanishDock(
   refreshSubagents: ((parentSessionId: string) => unknown) | undefined,
-): (props: { useSessions?: (selector: (state: any) => any) => any }) => any {
-  return function DelegateVanishDock({ useSessions }: { useSessions?: (selector: (state: any) => any) => any }): any {
+): (props: {
+  useSessions?: (selector: (state: any) => any) => any
+  sessionId?: unknown
+}) => any {
+  return function DelegateVanishDock({ useSessions, sessionId }: {
+    useSessions?: (selector: (state: any) => any) => any
+    sessionId?: unknown
+  }): any {
     // 三个独立 selector：各自返回 store 内部稳定引用（新对象会破坏
     // useSyncExternalStore 语义导致死循环），任一变化即重渲染。
-    const current: string | undefined = useSessions?.((state: any) => state?.current)
+    // current：0.1.6 起快照移除 current，session 作用域槽改由 props.sessionId
+    // 注入——resolveSessionId 优先取 prop、回退 store.current（同「记忆」开关）。
+    const current: string | undefined = resolveSessionId(sessionId, useSessions?.((state: any) => state?.current))
     const byId = useSessions?.((state: any) => state?.byId)
     const catalogs = useSessions?.((state: any) => state?.subagentsByParent)
     const sentinelRef = useRef<HTMLElement | null>(null)

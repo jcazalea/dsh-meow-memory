@@ -8,6 +8,20 @@
 
 const SESSION_MEMORY_URL = '/meow-memory/session-memory'
 
+/**
+ * 解析当前会话 id（v0.31.1 回归修复，v0.32.1 重新并入源码）：
+ * 优先宿主注入的 sessionId（dsh 0.1.6 起 session 作用域槽的标准 prop，必注入），
+ * 回退 sessions store 快照的 current（旧宿主 / 全局作用域）。
+ * 0.1.6 重写 session controller 后 ClientSessions.list 快照移除了 current 字段，
+ * 组件只认 current 会恒 undefined → fail-closed 静默消失（composer「记忆」开关
+ * 消失的根因）。注意此修复必须随源码提交进 git，否则重建发布即回归。
+ */
+export function resolveSessionId(sessionIdProp: unknown, storeCurrent: unknown): string | undefined {
+  if (typeof sessionIdProp === 'string' && sessionIdProp.trim().length > 0) return sessionIdProp
+  if (typeof storeCurrent === 'string' && storeCurrent.trim().length > 0) return storeCurrent
+  return undefined
+}
+
 /** 读取当前会话记忆开关。失败（非 JSON/HTTP 非 2xx）→ null = 不可用，隐藏 UI。 */
 export async function fetchSessionMemory(sessionId: string, signal?: AbortSignal): Promise<boolean | null> {
   try {

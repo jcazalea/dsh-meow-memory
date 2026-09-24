@@ -18,6 +18,7 @@ import {
   knownState,
   postSessionMemory,
   publishState,
+  resolveSessionId,
   subscribeStateChange,
 } from './client-session-toggle-core.ts'
 
@@ -26,9 +27,15 @@ import {
 /**
  * @param useSessions - renderer standardProps 注入的官方 sessions store hook
  *   （与 DelegateVanishDock / 查看器面板同款；不可用时 fail-closed 不渲染）。
+ * @param sessionId - dsh 0.1.6 起 session 作用域槽注入的标准 prop（必注入）；
+ *   优先于此，回退 store.current（0.1.6 快照已移除 current）。
  */
-export function MemoryToggleDock(props: { useSessions?: (sel: (state: unknown) => unknown) => unknown }): any {
-  const current = props.useSessions?.((state: unknown) => (state as { current?: string } | undefined)?.current)
+export function MemoryToggleDock(props: {
+  useSessions?: (sel: (state: unknown) => unknown) => unknown
+  sessionId?: unknown
+}): any {
+  const storeCurrent = props.useSessions?.((state: unknown) => (state as { current?: string } | undefined)?.current)
+  const current = resolveSessionId(props.sessionId, storeCurrent)
   const [enabled, setEnabled] = useState<boolean | null>(null) // null = 未加载/不可用（隐藏）
   const [busy, setBusy] = useState(false)
 
@@ -108,13 +115,18 @@ export function MemoryToggleDock(props: { useSessions?: (sel: (state: unknown) =
 
 /**
  * @param session - InputZone owner props 里的 SessionSnapshot（含 sessionId）。
+ * @param sessionId - dsh 0.1.6 起 session 作用域槽注入的标准 prop（优先于此）。
  */
-export function MemoryDisabledNotice(props: { session?: { sessionId?: string } | null }): any {
-  const sessionId = (() => {
+export function MemoryDisabledNotice(props: {
+  sessionId?: unknown
+  session?: { sessionId?: string } | null
+}): any {
+  const legacy = (() => {
     const s = props.session
     if (s === null || s === undefined) return undefined
     return typeof s.sessionId === 'string' && s.sessionId.length > 0 ? s.sessionId : undefined
   })()
+  const sessionId = resolveSessionId(props.sessionId, legacy)
   const [disabled, setDisabled] = useState(false)
 
   useEffect(() => {
